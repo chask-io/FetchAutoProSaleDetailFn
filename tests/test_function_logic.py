@@ -75,7 +75,7 @@ def test_process_request_returns_promoted_detail(monkeypatch):
     assert captured_kwargs["folio"] == "7954"
     assert captured_kwargs["branch"] == "698"
     assert captured_kwargs["browserbase_api_key"] == "bb-key"
-    assert payload["status"] == "ok"
+    assert payload["status"] == "success"
     assert payload["folio"] == "7954"
     assert payload["folio_venta"] == "7954"
     assert payload["numero_chasis"] == "CH123"

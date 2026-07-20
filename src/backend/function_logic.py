@@ -74,7 +74,7 @@ class FunctionBackend:
             )
             detail = client.fetch_detail()
             result = {
-                "status": "ok",
+                "status": "success",
                 "tenant_id": TENANT_SLUG,
                 "folio": detail.folio,
                 "folio_venta": detail.folio,
@@ -137,7 +137,7 @@ def unavailable_result(*, folio: str, branch: str, mensaje_tecnico: str) -> Dict
 
 
 def format_result(result: Dict[str, Any]) -> str:
-    if result.get("status") == "ok":
+    if result.get("status") == "success":
         header = f"Detalle AutoPro extraido para folio {result.get('folio')}."
     else:
         header = f"Detalle AutoPro no disponible para folio {result.get('folio') or 'desconocido'}."

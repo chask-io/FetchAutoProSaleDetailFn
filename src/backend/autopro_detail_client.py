@@ -263,16 +263,7 @@ class AutoProSaleDetailClient:
         )
         folio_input.clear()
         folio_input.send_keys(self.folio)
-        search = self._first_present(
-            access,
-            By.CSS_SELECTOR,
-            [
-                "input[id$='FilterButton__Button']",
-                "button[id$='FilterButton__Button']",
-                "input[type='submit'][value*='Buscar']",
-                "button[type='submit']",
-            ],
-        )
+        search = find_grid_search_button(access)
         access.click(search, label="Buscar")
         time.sleep(3)
         if not page_contains_text(driver, self.folio):
@@ -459,6 +450,25 @@ def find_safe_next_button(driver):
     )
     visible = [candidate for candidate in candidates if candidate.is_displayed()]
     return visible[0] if visible else None
+
+
+def find_grid_search_button(access: ReadOnlyElementAccess):
+    from selenium.webdriver.common.by import By
+
+    exact_id = "ctl00_PageContent_Dms_Venta_VehiculoFilterButton__Button"
+    try:
+        return access.find_element(By.ID, exact_id)
+    except Exception:
+        return AutoProSaleDetailClient._first_present(
+            access,
+            By.CSS_SELECTOR,
+            [
+                "input[id$='FilterButton__Button']",
+                "button[id$='FilterButton__Button']",
+                "input[type='submit'][value*='Buscar']",
+                "button[type='submit']",
+            ],
+        )
 
 
 def wizard_ready(driver) -> bool:

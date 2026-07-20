@@ -166,3 +166,19 @@ def test_extract_label_value_fields_does_not_mutate_or_click_controls():
     assert ".click(" not in source
     assert ".clear(" not in source
     assert ".send_keys(" not in source
+
+
+def test_grid_search_button_prefers_exact_read_only_id():
+    class Access:
+        def __init__(self):
+            self.calls = []
+            self.button = object()
+
+        def find_element(self, by, selector):
+            self.calls.append((by, selector))
+            return self.button
+
+    access = Access()
+
+    assert client.find_grid_search_button(access) is access.button
+    assert access.calls == [(By.ID, "ctl00_PageContent_Dms_Venta_VehiculoFilterButton__Button")]
