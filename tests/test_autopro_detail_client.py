@@ -116,8 +116,8 @@ def test_promote_detail_uses_autopro_precio_venta_descuento_aliases():
         "tabs": {
             "Datos Vehículo": {
                 "fields": {
-                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento": "$ -2.962.148",
                     "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento_Pje": "-12,09",
+                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento": "$ -2.962.148",
                 },
                 "tables": [],
                 "text": "",

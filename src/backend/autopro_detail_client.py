@@ -1109,7 +1109,11 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
         "forma_pago": forma_pago_payload(forma_pago_tab),
         "bono_descuento": first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
         "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %", "precio_venta_descuento_pje", "precio venta descuento pje"]),
-        "dcto_recargo_amount": first_value_by_label(all_fields, ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento", "precio_venta_descuento", "precio venta descuento"]),
+        "dcto_recargo_amount": first_value_by_label(
+            all_fields,
+            ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento", "precio_venta_descuento", "precio venta descuento"],
+            exclude_labels=["precio_venta_descuento_pje", "precio venta descuento pje"],
+        ),
         "total_vehiculo_cliente": first_value_by_label(all_fields, ["total vehiculo cliente", "total vehiculo", "total cliente"]),
         "fecha_entrega": first_value_by_label(all_fields, ["fecha entrega", "fecha de entrega"]),
     }
@@ -1141,7 +1145,13 @@ def first_tab_matching(tabs: dict[str, Any], needle: str) -> Optional[dict[str, 
     return None
 
 
-def first_value_by_label(fields: dict[str, list[str]], labels: list[str]) -> Optional[str]:
+def first_value_by_label(
+    fields: dict[str, list[str]],
+    labels: list[str],
+    *,
+    exclude_labels: Optional[list[str]] = None,
+) -> Optional[str]:
+    exclude_needles = [normalize_key(label) for label in (exclude_labels or [])]
     for label in labels:
         values = fields.get(normalize_key(label))
         if values:
@@ -1149,7 +1159,7 @@ def first_value_by_label(fields: dict[str, list[str]], labels: list[str]) -> Opt
     for label in labels:
         needle = normalize_key(label)
         for key, values in fields.items():
-            if needle in key and values:
+            if needle in key and values and not any(exclude in key for exclude in exclude_needles):
                 return values[0]
     return None
 
