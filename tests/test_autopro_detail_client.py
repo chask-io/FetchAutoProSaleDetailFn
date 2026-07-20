@@ -258,8 +258,9 @@ def test_extract_current_tab_bulk_snapshot_scopes_active_root_and_preserves_larg
         def __init__(self):
             self.target_fragment = None
 
-        def execute_script(self, script, target_fragment=""):
+        def execute_script(self, script, target_fragment="", include_tables=True):
             self.target_fragment = target_fragment
+            self.include_tables = include_tables
             assert "click" not in script
             assert "Guardar" not in script
             assert "Finalizar" not in script
@@ -299,6 +300,7 @@ def test_extract_current_tab_bulk_snapshot_scopes_active_root_and_preserves_larg
     )
 
     assert driver.target_fragment == "panel-resumen"
+    assert driver.include_tables is True
     assert tab["fields"]["Comentario"] == "texto"
     assert tab["fields"]["Campo Vacio"] == ""
     assert tab["text"] == ""
@@ -317,8 +319,9 @@ def test_extract_current_tab_direct_target_prefers_aria_controls_over_href():
         def __init__(self):
             self.target_fragment = None
 
-        def execute_script(self, script, target_fragment=""):
+        def execute_script(self, script, target_fragment="", include_tables=True):
             self.target_fragment = target_fragment
+            self.include_tables = include_tables
             assert "const directPanel = panelFromId(targetFragment)" in script
             assert "root_source: rootChoice.source" in script
             return {
@@ -343,6 +346,7 @@ def test_extract_current_tab_direct_target_prefers_aria_controls_over_href():
     )
 
     assert driver.target_fragment == "panel-aria"
+    assert driver.include_tables is True
     assert tab["fields"]["Campo"] == "valor"
     assert tab["_snapshot_meta"]["root_source"] == "direct-target"
     assert tab["_snapshot_meta"]["root_id"] == "panel-aria"
@@ -355,8 +359,9 @@ def test_extract_current_tab_logs_fallback_source_when_no_direct_target():
         def __init__(self):
             self.target_fragment = None
 
-        def execute_script(self, script, target_fragment=""):
+        def execute_script(self, script, target_fragment="", include_tables=True):
             self.target_fragment = target_fragment
+            self.include_tables = include_tables
             assert "fallback-active-target" in script
             return {
                 "fields": [{"label": "Campo", "value": ""}],
@@ -374,7 +379,104 @@ def test_extract_current_tab_logs_fallback_source_when_no_direct_target():
     tab = client.extract_current_tab(driver, active_tab={})
 
     assert driver.target_fragment == ""
+    assert driver.include_tables is True
     assert tab["fields"]["Campo"] == ""
     assert tab["_snapshot_meta"]["root_source"] == "fallback-active-target"
     assert tab["_snapshot_meta"]["active_id"] == "fallback-tab"
     assert tab["_snapshot_meta"]["active_href_fragment"] == "fallback-panel"
+
+
+def test_extract_current_tab_can_skip_non_resumen_layout_tables_and_preserve_textarea_verbatim():
+    class Driver:
+        def __init__(self):
+            self.include_tables = None
+
+        def execute_script(self, script, target_fragment="", include_tables=True):
+            self.include_tables = include_tables
+            assert "const includeTables = Boolean(arguments[1]);" in script
+            assert "tag === 'textarea'" in script
+            huge_rows = [["Header", "Value"]] + [[f"layout-{index}", str(index)] for index in range(1, 200)]
+            return {
+                "fields": [{"label": "Comentario", "value": "linea 1\n  linea 2  "}],
+                "tables": [{"index": 1, "rows": huge_rows}] if include_tables else [],
+                "text": "",
+                "meta": {"root_source": "form"},
+            }
+
+    driver = Driver()
+
+    tab = client.extract_current_tab(driver, include_tables=False)
+
+    assert driver.include_tables is False
+    assert tab["fields"]["Comentario"] == "linea 1\n  linea 2  "
+    assert tab["tables"] == []
+
+
+def test_extract_wizard_uses_fixed_step_names_and_only_keeps_resumen_tables(monkeypatch):
+    huge_resumen_rows = [["Concepto", "Monto"]] + [[f"item-{index}", str(index)] for index in range(1, 150)]
+    extract_calls = []
+    clicks = []
+
+    class Deadline:
+        def raise_if_expired(self):
+            return None
+
+        def remaining_seconds(self):
+            return 120
+
+    class Access:
+        def click(self, element, *, label):
+            clicks.append(label)
+
+    scraper = client.AutoProSaleDetailClient.__new__(client.AutoProSaleDetailClient)
+    scraper.folio = "7954"
+    scraper._switch_to_wizard = lambda driver: None
+
+    monkeypatch.setattr(client, "assert_no_blocking_prompt", lambda driver: None)
+    monkeypatch.setattr(client, "current_tab_name", lambda driver: None)
+    monkeypatch.setattr(client, "active_tab_metadata", lambda driver: {})
+
+    def fake_extract_current_tab(driver, *, active_tab=None, include_tables=True):
+        step = len(extract_calls)
+        extract_calls.append(include_tables)
+        tab_name = client.WIZARD_STEP_NAMES[step]
+        fields = {
+            "Campo Desconocido": "",
+            "Paso": tab_name,
+        }
+        if tab_name == "Forma de Pago":
+            fields["Forma Pago"] = "Compra Inteligente"
+        if tab_name == "Resumen Venta":
+            fields.update(
+                {
+                    "Comentario": "bono flota\n  devolver completo  ",
+                    "Bono Descuento": "$300.000",
+                    "% Dcto Recargo": "0",
+                    "Dcto Recargo": "$0",
+                }
+            )
+        return {
+            "fields": fields,
+            "tables": [{"index": 1, "rows": huge_resumen_rows}] if include_tables else [],
+            "text": "",
+            "_snapshot_meta": {"root_source": "form"},
+        }
+
+    monkeypatch.setattr(client, "extract_current_tab", fake_extract_current_tab)
+    monkeypatch.setattr(client, "find_safe_next_button", lambda driver: object() if len(clicks) < 7 else None)
+
+    raw = scraper._extract_wizard(object(), Access(), None, Deadline())
+    promoted = client.promote_detail(raw)
+
+    assert raw["tab_order"] == list(client.WIZARD_STEP_NAMES)
+    assert extract_calls == [False, False, False, False, False, False, False, True]
+    assert all(raw["tabs"][name]["tables"] == [] for name in client.WIZARD_STEP_NAMES[:-1])
+    assert len(raw["tabs"]["Resumen Venta"]["tables"][0]["rows"]) == 150
+    assert raw["tabs"]["Resumen Venta"]["tables"][0]["rows"][-1] == ["item-149", "149"]
+    assert raw["tabs"]["Identificación Cliente"]["fields"]["Campo Desconocido"] == ""
+    assert promoted["forma_pago"]["fields"]["Forma Pago"] == "Compra Inteligente"
+    assert promoted["forma_pago"]["tables"] == []
+    assert promoted["comentario"] == "bono flota\n  devolver completo  "
+    assert promoted["bono_descuento"] == "$300.000"
+    assert promoted["dcto_recargo_pct"] == "0"
+    assert promoted["dcto_recargo_amount"] == "$0"

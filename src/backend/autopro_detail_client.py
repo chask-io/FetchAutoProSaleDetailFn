@@ -26,6 +26,16 @@ MIN_SECONDS_FOR_NEXT_TAB = 12
 FORBIDDEN_UI_TERMS = ("guardar", "finalizar")
 SAFE_NEXT_LABEL = "Siguiente"
 CANCEL_LABEL = "Cancelar"
+WIZARD_STEP_NAMES = (
+    "Identificación Cliente",
+    "Datos Vehículo",
+    "Retoma",
+    "Trámites",
+    "Accesorios",
+    "Datos Compra",
+    "Forma de Pago",
+    "Resumen Venta",
+)
 
 
 class AutoProReadOnlyViolation(RuntimeError):
@@ -307,12 +317,16 @@ class AutoProSaleDetailClient:
             deadline.raise_if_expired()
             self._switch_to_wizard(driver)
             assert_no_blocking_prompt(driver)
-            tab_name = current_tab_name(driver) or f"tab_{safety_steps + 1}"
+            tab_name = wizard_step_name(safety_steps, current_tab_name(driver))
             normalized = normalize_key(tab_name)
             if normalized not in visited:
                 started = time.monotonic()
                 active_tab = active_tab_metadata(driver)
-                tab_snapshot = extract_current_tab(driver, active_tab=active_tab)
+                tab_snapshot = extract_current_tab(
+                    driver,
+                    active_tab=active_tab,
+                    include_tables=should_serialize_tables_for_tab(tab_name),
+                )
                 snapshot_meta = tab_snapshot.pop("_snapshot_meta", {})
                 tabs[tab_name] = tab_snapshot
                 snapshot_metrics = tab_snapshot_metrics(tabs[tab_name], snapshot_meta)
@@ -706,10 +720,25 @@ def current_tab_name(driver) -> Optional[str]:
     return None
 
 
-def extract_current_tab(driver, *, active_tab: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+def wizard_step_name(step_index: int, detected_name: Optional[str] = None) -> str:
+    if 0 <= step_index < len(WIZARD_STEP_NAMES):
+        return WIZARD_STEP_NAMES[step_index]
+    return detected_name or f"tab_{step_index + 1}"
+
+
+def should_serialize_tables_for_tab(tab_name: str) -> bool:
+    return "resumen" in normalize_key(tab_name)
+
+
+def extract_current_tab(
+    driver,
+    *,
+    active_tab: Optional[dict[str, Any]] = None,
+    include_tables: bool = True,
+) -> dict[str, Any]:
     active_tab = active_tab or {}
     target_fragment = active_tab.get("aria_controls") or active_tab.get("href_fragment") or ""
-    snapshot = execute_read_only_tab_snapshot(driver, target_fragment=target_fragment)
+    snapshot = execute_read_only_tab_snapshot(driver, target_fragment=target_fragment, include_tables=include_tables)
     snapshot_meta = snapshot.get("meta", {})
     if not isinstance(snapshot_meta, dict):
         snapshot_meta = {}
@@ -727,7 +756,8 @@ def extract_current_tab(driver, *, active_tab: Optional[dict[str, Any]] = None) 
         label = normalize_space(item.get("label", ""))
         if not label:
             continue
-        add_multivalue(fields, label, normalize_space(item.get("value", "")))
+        value = item.get("value", "")
+        add_multivalue(fields, label, "" if value is None else str(value))
     return {
         "fields": fields,
         "tables": snapshot.get("tables", []),
@@ -779,10 +809,16 @@ def active_tab_metadata(driver) -> dict[str, Any]:
     ) or {}
 
 
-def execute_read_only_tab_snapshot(driver, *, target_fragment: str = "") -> dict[str, Any]:
+def execute_read_only_tab_snapshot(
+    driver,
+    *,
+    target_fragment: str = "",
+    include_tables: bool = True,
+) -> dict[str, Any]:
     return driver.execute_script(
         """
         const targetFragment = arguments[0] || '';
+        const includeTables = Boolean(arguments[1]);
         const norm = (value) => (value || '').toString().replace(/\\s+/g, ' ').trim();
         const visible = (el) => {
           if (!el) return false;
@@ -881,6 +917,9 @@ def execute_read_only_tab_snapshot(driver, *, target_fragment: str = "") -> dict
             const selected = control.options && control.selectedIndex >= 0 ? control.options[control.selectedIndex] : null;
             return norm(selected ? selected.text : control.value);
           }
+          if (tag === 'textarea') {
+            return control.value != null ? control.value.toString() : (control.innerText || '').toString();
+          }
           return norm(control.value != null ? control.value : control.innerText);
         };
         const fields = Array.from(root.querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])'))
@@ -895,12 +934,12 @@ def execute_read_only_tab_snapshot(driver, *, target_fragment: str = "") -> dict
             if (label) fields.push({ label, value: norm(dd.innerText) });
           }
         });
-        const tables = Array.from(root.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
+        const tables = includeTables ? Array.from(root.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
           const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
             Array.from(row.querySelectorAll('th,td')).map((cell) => norm(cell.innerText))
           ).filter((cells) => cells.some(Boolean));
           return { index: tableIndex + 1, rows };
-        }).filter((table) => table.rows.length > 0);
+        }).filter((table) => table.rows.length > 0) : [];
         const rowsCount = tables.reduce((total, table) => total + table.rows.length, 0);
         const cellsCount = tables.reduce((total, table) => total + table.rows.reduce((rowTotal, row) => rowTotal + row.length, 0), 0);
         return {
@@ -925,6 +964,7 @@ def execute_read_only_tab_snapshot(driver, *, target_fragment: str = "") -> dict
         };
         """,
         target_fragment,
+        include_tables,
     ) or {"fields": [], "tables": [], "text": ""}
 
 
