@@ -28,7 +28,12 @@ def test_promote_detail_preserves_forma_pago_rows_and_resumen():
     raw = {
         "tabs": {
             "Identificacion Cliente": {
-                "fields": {"Uso Vehiculo": "Particular", "Tipo Venta": "Retail"},
+                "fields": {"Uso Vehiculo": "Particular", "Tipo Venta": "Retail", "Numero Chasis": "CH123"},
+                "tables": [],
+                "text": "",
+            },
+            "Datos Vehiculo": {
+                "fields": {"VIN": "VIN987", "Codigo Interno": "INT456"},
                 "tables": [],
                 "text": "",
             },
@@ -55,6 +60,8 @@ def test_promote_detail_preserves_forma_pago_rows_and_resumen():
     promoted = client.promote_detail(raw)
 
     assert promoted["comentario"] == "M1, devolver bono flota"
+    assert promoted["numero_chasis"] == "CH123"
+    assert promoted["vin_or_unidad_id"] == "VIN987"
     assert promoted["uso_vehiculo"] == "Particular"
     assert promoted["tipo_venta_detalle"] == "Retail"
     assert promoted["bono_descuento"] == "$300.000"
@@ -83,3 +90,20 @@ def test_result_payload_is_json_serializable():
     )
 
     json.dumps(detail.__dict__, ensure_ascii=False)
+
+
+def test_promote_detail_falls_back_to_codigo_interno_for_identity_key():
+    raw = {
+        "tabs": {
+            "Datos Vehiculo": {
+                "fields": {"Codigo Interno": "UNI-7954"},
+                "tables": [],
+                "text": "",
+            }
+        }
+    }
+
+    promoted = client.promote_detail(raw)
+
+    assert promoted["numero_chasis"] is None
+    assert promoted["vin_or_unidad_id"] == "UNI-7954"

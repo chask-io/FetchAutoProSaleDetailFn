@@ -54,6 +54,8 @@ def test_process_request_returns_promoted_detail(monkeypatch):
                 detalle_raw={"tabs": {"Resumen Venta": {"fields": {"Comentario": "texto"}, "tables": [], "text": "texto"}}},
                 promoted={
                     "comentario": "texto",
+                    "numero_chasis": "CH123",
+                    "vin_or_unidad_id": "VIN987",
                     "uso_vehiculo": "Particular",
                     "tipo_venta_detalle": "Retail",
                     "forma_pago": {"fields": {"Forma Pago": "Contado"}, "tables": [], "text": "Contado"},
@@ -74,6 +76,10 @@ def test_process_request_returns_promoted_detail(monkeypatch):
     assert captured_kwargs["branch"] == "698"
     assert captured_kwargs["browserbase_api_key"] == "bb-key"
     assert payload["status"] == "ok"
+    assert payload["folio"] == "7954"
+    assert payload["folio_venta"] == "7954"
+    assert payload["numero_chasis"] == "CH123"
+    assert payload["vin_or_unidad_id"] == "VIN987"
     assert payload["comentario"] == "texto"
     assert payload["forma_pago"]["fields"]["Forma Pago"] == "Contado"
     assert payload["detalle_raw"]["tabs"]["Resumen Venta"]["fields"]["Comentario"] == "texto"
@@ -94,6 +100,9 @@ def test_process_request_returns_structured_unavailable_on_live_error(monkeypatc
 
     assert payload["status"] == "unavailable"
     assert payload["folio"] == "7954"
+    assert payload["folio_venta"] == "7954"
+    assert payload["numero_chasis"] is None
+    assert payload["vin_or_unidad_id"] is None
     assert payload["detalle_raw"] == {}
     assert payload["mensaje_tecnico"] == "portal timeout"
 

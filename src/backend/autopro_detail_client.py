@@ -591,6 +591,8 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
     resumen_tab = first_tab_matching(tabs, "resumen")
     promoted = {
         "comentario": first_value_by_label(all_fields, ["comentario", "observacion", "observaciones"]),
+        "numero_chasis": first_value_by_label(all_fields, ["chasis", "numero chasis", "número chasis", "nro chasis"]),
+        "vin_or_unidad_id": first_value_by_label(all_fields, ["vin", "numero vin", "número vin", "codigo interno", "código interno", "chasis", "numero chasis", "número chasis"]),
         "uso_vehiculo": first_value_by_label(all_fields, ["uso vehiculo", "uso del vehiculo", "uso"]),
         "tipo_venta_detalle": first_value_by_label(all_fields, ["tipo venta", "tipo de venta", "tipo venta detalle"]),
         "forma_pago": forma_pago_payload(forma_pago_tab),
