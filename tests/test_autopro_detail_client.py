@@ -204,15 +204,18 @@ def test_apply_grid_filters_sets_broad_date_window_and_folio(monkeypatch):
         def __init__(self):
             self.from_date = _FakeElement()
             self.to_date = _FakeElement()
-            self.folio = _FakeElement()
+            self.folio_from = _FakeElement(attrs={"id": "ctl00_PageContent_FolioFromFilter", "value": ""})
+            self.folio_to = _FakeElement(attrs={"id": "ctl00_PageContent_FolioToFilter", "value": ""})
 
         def find_elements(self, by, selector):
             if (by, selector) == (By.ID, "ctl00_PageContent_FechaFromFilter"):
                 return [self.from_date]
             if (by, selector) == (By.ID, "ctl00_PageContent_FechaToFilter"):
                 return [self.to_date]
-            if by == By.CSS_SELECTOR and selector == "input[id*='Folio'][id*='Filter']":
-                return [self.folio]
+            if (by, selector) == (By.ID, "ctl00_PageContent_FolioFromFilter"):
+                return [self.folio_from]
+            if (by, selector) == (By.ID, "ctl00_PageContent_FolioToFilter"):
+                return [self.folio_to]
             return []
 
     access = Access()
@@ -223,8 +226,10 @@ def test_apply_grid_filters_sets_broad_date_window_and_folio(monkeypatch):
     assert access.from_date.cleared is True
     assert access.from_date.sent_values == ["01-01-2010"]
     assert access.to_date.sent_values == ["20-07-2026"]
-    assert access.folio.cleared is True
-    assert access.folio.sent_values == ["7954"]
+    assert access.folio_from.cleared is True
+    assert access.folio_from.sent_values == ["7954"]
+    assert access.folio_to.cleared is True
+    assert access.folio_to.sent_values == ["7954"]
 
 
 def test_element_metadata_excludes_password_and_redacts_client_filter_value():

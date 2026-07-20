@@ -487,6 +487,18 @@ def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> d
             elements[0].send_keys(value)
             applied["date_filters"].append({"id": selector, "value_set": value})
 
+    folio_filters = []
+    for selector in ["ctl00_PageContent_FolioFromFilter", "ctl00_PageContent_FolioToFilter"]:
+        elements = access.find_elements(By.ID, selector)
+        if elements:
+            elements[0].clear()
+            elements[0].send_keys(folio)
+            folio_filters.append({"target": element_metadata(elements[0], include_value=True), "value_set": folio})
+    if folio_filters:
+        applied["folio_filters"] = folio_filters
+        applied.pop("folio_filter", None)
+        return applied
+
     folio_input = AutoProSaleDetailClient._first_present(
         access,
         By.CSS_SELECTOR,
