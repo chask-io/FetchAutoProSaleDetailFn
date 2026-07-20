@@ -250,8 +250,9 @@ def test_safe_row_identifiers_keep_only_folio_and_actions():
     assert client.safe_row_identifiers(cells, "7954") == ["7954", "Editar"]
 
 
-def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
-    rows = [["Header", "Value"]] + [[f"row-{index}", str(index)] for index in range(1, 121)]
+def test_extract_current_tab_bulk_snapshot_scopes_active_root_and_preserves_large_tables():
+    active_rows = [["Header", "Value"]] + [[f"row-{index}", str(index)] for index in range(1, 121)]
+    hidden_sibling_rows = [["Hidden", "Value"]] + [[f"hidden-{index}", str(index)] for index in range(1, 200)]
 
     class Driver:
         def execute_script(self, script):
@@ -261,10 +262,12 @@ def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
             assert "querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])')" in script
             assert "querySelectorAll('button" not in script
             assert "querySelectorAll('input, select, textarea')" not in script
+            assert "root.querySelectorAll('table')" in script
+            assert "document.querySelectorAll('table')" not in script
             assert "document.body ? document.body.innerText" not in script
             return {
                 "fields": [{"label": "Comentario", "value": "texto"}, {"label": "Campo Vacio", "value": ""}],
-                "tables": [{"index": 1, "rows": rows}],
+                "tables": [{"index": 1, "rows": active_rows}],
                 "text": "",
             }
 
@@ -273,6 +276,8 @@ def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
     assert tab["fields"]["Comentario"] == "texto"
     assert tab["fields"]["Campo Vacio"] == ""
     assert tab["text"] == ""
+    assert len(hidden_sibling_rows) == 200
     assert len(tab["tables"][0]["rows"]) == 121
     assert tab["tables"][0]["rows"][-1] == ["row-120", "120"]
+    assert all("hidden-" not in " ".join(row) for row in tab["tables"][0]["rows"])
     assert all("truncated" not in " ".join(row).lower() for row in tab["tables"][0]["rows"])

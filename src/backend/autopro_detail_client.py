@@ -710,9 +710,30 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
           const rect = el.getBoundingClientRect();
           return rect.width > 0 || rect.height > 0;
         };
+        const snapshotRoot = () => {
+          const selectors = [
+            '.tab-pane.active',
+            '.step-pane.active',
+            '.wizard-step.active',
+            'fieldset',
+            '.panel-body',
+            '.form-horizontal',
+            'form'
+          ];
+          for (const selector of selectors) {
+            for (const candidate of Array.from(document.querySelectorAll(selector))) {
+              if (!visible(candidate)) continue;
+              if (candidate.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+                return candidate;
+              }
+            }
+          }
+          return document.body;
+        };
+        const root = snapshotRoot();
         const labelFor = (control) => {
           if (control.id) {
-            const explicit = document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+            const explicit = root.querySelector(`label[for="${CSS.escape(control.id)}"]`) || document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
             if (explicit && norm(explicit.innerText)) return norm(explicit.innerText);
           }
           const group = control.closest('.form-group, .form-item, .control-group, td, div');
@@ -737,19 +758,19 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
           }
           return norm(control.value != null ? control.value : control.innerText);
         };
-        const fields = Array.from(document.querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])'))
+        const fields = Array.from(root.querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])'))
           .filter(visible)
           .filter((control) => (control.getAttribute('type') || '').toLowerCase() !== 'password')
           .map((control) => ({ label: labelFor(control), value: valueFor(control) }))
           .filter((item) => item.label);
-        Array.from(document.querySelectorAll('dt')).filter(visible).forEach((dt) => {
+        Array.from(root.querySelectorAll('dt')).filter(visible).forEach((dt) => {
           const dd = dt.nextElementSibling;
           if (dd && dd.tagName && dd.tagName.toLowerCase() === 'dd') {
             const label = norm(dt.innerText);
             if (label) fields.push({ label, value: norm(dd.innerText) });
           }
         });
-        const tables = Array.from(document.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
+        const tables = Array.from(root.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
           const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
             Array.from(row.querySelectorAll('th,td')).map((cell) => norm(cell.innerText))
           ).filter((cells) => cells.some(Boolean));

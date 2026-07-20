@@ -148,6 +148,11 @@ def unavailable_result(
 
 def format_result(result: Dict[str, Any]) -> str:
     attach_response_diagnostics(result)
+    logger.info(
+        "FetchAutoProSaleDetailFn RESULT_JSON serialized_bytes=%s status=%s",
+        result["diagnostico_respuesta"]["serialized_bytes"],
+        result.get("status"),
+    )
     if result.get("status") == "success":
         header = f"Detalle AutoPro extraido para folio {result.get('folio')}."
     else:
