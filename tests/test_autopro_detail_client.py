@@ -118,12 +118,20 @@ class _FakeElement:
         self.attrs = attrs or {}
         self.displayed = displayed
         self.children = children or {}
+        self.cleared = False
+        self.sent_values = []
 
     def is_displayed(self):
         return self.displayed
 
     def get_attribute(self, name):
         return self.attrs.get(name)
+
+    def clear(self):
+        self.cleared = True
+
+    def send_keys(self, value):
+        self.sent_values.append(value)
 
     def find_element(self, by, selector):
         values = self.find_elements(by, selector)
@@ -182,3 +190,38 @@ def test_grid_search_button_prefers_exact_read_only_id():
 
     assert client.find_grid_search_button(access) is access.button
     assert access.calls == [(By.ID, "ctl00_PageContent_Dms_Venta_VehiculoFilterButton__Button")]
+
+
+def test_apply_grid_filters_sets_broad_date_window_and_folio(monkeypatch):
+    from datetime import date
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 20)
+
+    class Access:
+        def __init__(self):
+            self.from_date = _FakeElement()
+            self.to_date = _FakeElement()
+            self.folio = _FakeElement()
+
+        def find_elements(self, by, selector):
+            if (by, selector) == (By.ID, "ctl00_PageContent_FechaFromFilter"):
+                return [self.from_date]
+            if (by, selector) == (By.ID, "ctl00_PageContent_FechaToFilter"):
+                return [self.to_date]
+            if by == By.CSS_SELECTOR and selector == "input[id*='Folio'][id*='Filter']":
+                return [self.folio]
+            return []
+
+    access = Access()
+    monkeypatch.setattr(client, "date", FixedDate)
+
+    client.apply_grid_filters_for_folio(access, "7954")
+
+    assert access.from_date.cleared is True
+    assert access.from_date.sent_values == ["01-01-2010"]
+    assert access.to_date.sent_values == ["20-07-2026"]
+    assert access.folio.cleared is True
+    assert access.folio.sent_values == ["7954"]

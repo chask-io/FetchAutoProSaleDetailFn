@@ -7,6 +7,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ DEFAULT_MAX_SECONDS = 540
 DEFAULT_WAIT_SECONDS = 20
 PAGE_LOAD_TIMEOUT_SECONDS = 30
 SCRIPT_TIMEOUT_SECONDS = 30
+GRID_SEARCH_START_DATE = "01-01-2010"
 
 FORBIDDEN_UI_TERMS = ("guardar", "finalizar")
 SAFE_NEXT_LABEL = "Siguiente"
@@ -247,22 +249,8 @@ class AutoProSaleDetailClient:
         self._log("Opened Consulta Venta Vehiculo via menu")
 
     def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.keys import Keys
-
         self._switch_to_grid(driver)
-        folio_input = self._first_present(
-            access,
-            By.CSS_SELECTOR,
-            [
-                "input[id*='Folio'][id*='Filter']",
-                "input[name*='Folio'][name*='Filter']",
-                "input[id*='Numero'][id*='Filter']",
-                "input[name*='Numero'][name*='Filter']",
-            ],
-        )
-        folio_input.clear()
-        folio_input.send_keys(self.folio)
+        apply_grid_filters_for_folio(access, self.folio)
         search = find_grid_search_button(access)
         access.click(search, label="Buscar")
         time.sleep(3)
@@ -469,6 +457,33 @@ def find_grid_search_button(access: ReadOnlyElementAccess):
                 "button[type='submit']",
             ],
         )
+
+
+def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> None:
+    from selenium.webdriver.common.by import By
+
+    date_to = date.today().strftime("%d-%m-%Y")
+    for selector, value in [
+        ("ctl00_PageContent_FechaFromFilter", GRID_SEARCH_START_DATE),
+        ("ctl00_PageContent_FechaToFilter", date_to),
+    ]:
+        elements = access.find_elements(By.ID, selector)
+        if elements:
+            elements[0].clear()
+            elements[0].send_keys(value)
+
+    folio_input = AutoProSaleDetailClient._first_present(
+        access,
+        By.CSS_SELECTOR,
+        [
+            "input[id*='Folio'][id*='Filter']",
+            "input[name*='Folio'][name*='Filter']",
+            "input[id*='Numero'][id*='Filter']",
+            "input[name*='Numero'][name*='Filter']",
+        ],
+    )
+    folio_input.clear()
+    folio_input.send_keys(folio)
 
 
 def wizard_ready(driver) -> bool:
