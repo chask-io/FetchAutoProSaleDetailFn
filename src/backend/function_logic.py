@@ -247,7 +247,7 @@ class FunctionBackend:
         if input_file_uuid:
             payload = self._load_input_json(str(input_file_uuid))
             values.extend(extract_folios_from_payload(payload))
-        return normalize_folio_requests(values)
+        return normalize_folio_requests(values, dedupe=False)
 
     def _load_input_json(self, requested_uuid: str) -> Any:
         info = self._find_session_file(requested_uuid)
@@ -372,10 +372,10 @@ def extract_folios_from_payload(payload: Any) -> List[Any]:
 
 
 def dedupe_folios(values: List[Any]) -> List[str]:
-    return [request["folio"] for request in normalize_folio_requests(values) if not request.get("error")]
+    return [request["folio"] for request in normalize_folio_requests(values, dedupe=True) if not request.get("error")]
 
 
-def normalize_folio_requests(values: List[Any]) -> List[Dict[str, str]]:
+def normalize_folio_requests(values: List[Any], *, dedupe: bool) -> List[Dict[str, str]]:
     requests_by_folio: List[Dict[str, str]] = []
     seen = set()
     for value in values:
@@ -388,12 +388,13 @@ def normalize_folio_requests(values: List[Any]) -> List[Dict[str, str]]:
         except Exception as exc:
             folio = raw[:80] or "desconocido"
             error = _safe_error_message(exc)
-        if folio not in seen:
-            item = {"folio": folio}
-            if error:
-                item["error"] = error
-            requests_by_folio.append(item)
-            seen.add(folio)
+        if dedupe and folio in seen:
+            continue
+        item = {"folio": folio}
+        if error:
+            item["error"] = error
+        requests_by_folio.append(item)
+        seen.add(folio)
     return requests_by_folio
 
 

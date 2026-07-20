@@ -332,8 +332,8 @@ def test_batch_loads_folios_from_generic_input_file_uuid(monkeypatch):
     assert contract["status"] == "success"
     assert contract["file_uuid"] == "output-uuid"
     assert contract["source_file_uuid"] == "input-uuid"
-    assert contract["counts"] == {"requested": 2, "success": 2, "failed": 0}
-    assert uploaded["payload"]["requested_folios"] == ["7954", "7955"]
+    assert contract["counts"] == {"requested": 3, "success": 3, "failed": 0}
+    assert uploaded["payload"]["requested_folios"] == ["7954", "7955", "7954"]
 
 
 def test_large_batch_payload_is_uploaded_not_relayed_inline(monkeypatch):
