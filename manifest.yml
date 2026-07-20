@@ -3,10 +3,10 @@ function:
   runtime: python3.12
   handler: handler.lambda_handler
   description: |
-    Extrae en modo solo lectura el detalle completo de una venta AutoPro por
-    folio para Daniel Achondo. Abre el wizard Editar Venta Vehiculo, preserva
-    campos crudos por pestana y promueve comentario, uso, tipo de venta,
-    forma de pago, descuentos, total y fecha de entrega para conciliacion.
+    Extrae en modo solo lectura el detalle completo de ventas AutoPro por folio
+    para Daniel Achondo. En modo batch procesa folios secuencialmente, aisla
+    fallas por folio, sube el resultado completo como JSON de sesion y retorna
+    solo file_uuid, conteos y resumen de fallas.
   timeout: 600
   memory_size: 1024
 
@@ -20,13 +20,30 @@ function:
       - name: node_id
         type: string
         description: Node ID for widget configuration injection
+    optional:
       - name: folio
         type: string
-        description: "Folio AutoPro de la venta a consultar en modo solo lectura. Primer hito autorizado: 7954."
-    optional:
+        description: Folio AutoPro unico para compatibilidad legacy; retorna el detalle inline.
+      - name: folios
+        type: array
+        description: Lista de folios AutoPro a consultar en batch; el resultado completo se sube como JSON.
+      - name: input_file_uuid
+        type: string
+        description: UUID generico de archivo JSON de sesion con folios, ventas, sales, items o records.
+      - name: file_uuid
+        type: string
+        description: Alias generico de input_file_uuid para compatibilidad de pipeline.
       - name: branch
         type: string
         description: Codigo de sucursal AutoPro. Default 698 (ANDES MOTOR).
+      - name: delay_seconds
+        type: number
+        description: Pausa polite entre folios batch. Default 1.5; maximo 30.
+        default: 1.5
+      - name: output_filename
+        type: string
+        description: Nombre del JSON de resultados batch a subir a la sesion.
+        default: autopro_sale_detail_results.json
       - name: verbose
         type: boolean
         description: Enable verbose logging
@@ -47,4 +64,4 @@ function:
 
   testing:
     handles_files: true
-    produces_files: false
+    produces_files: true
