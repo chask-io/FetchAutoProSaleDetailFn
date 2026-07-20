@@ -502,7 +502,7 @@ def extract_label_value_fields(driver) -> dict[str, Any]:
             continue
         label = label_for_control(driver, control)
         value = control_value(control)
-        if label and value != "":
+        if label:
             add_multivalue(fields, label, value)
 
     definition_rows = driver.find_elements(By.XPATH, "//dt[normalize-space(.)!='' and following-sibling::dd[1]]")

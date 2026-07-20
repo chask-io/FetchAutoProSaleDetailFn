@@ -1,7 +1,9 @@
+import inspect
 import json
 from pathlib import Path
 
 import pytest
+from selenium.webdriver.common.by import By
 
 from backend import autopro_detail_client as client
 
@@ -107,3 +109,60 @@ def test_promote_detail_falls_back_to_codigo_interno_for_identity_key():
 
     assert promoted["numero_chasis"] is None
     assert promoted["vin_or_unidad_id"] == "UNI-7954"
+
+
+class _FakeElement:
+    def __init__(self, *, tag_name="input", text="", attrs=None, displayed=True, children=None):
+        self.tag_name = tag_name
+        self.text = text
+        self.attrs = attrs or {}
+        self.displayed = displayed
+        self.children = children or {}
+
+    def is_displayed(self):
+        return self.displayed
+
+    def get_attribute(self, name):
+        return self.attrs.get(name)
+
+    def find_element(self, by, selector):
+        values = self.find_elements(by, selector)
+        if not values:
+            raise LookupError(selector)
+        return values[0]
+
+    def find_elements(self, by, selector):
+        return self.children.get((by, selector), [])
+
+
+class _FakeDriver:
+    def __init__(self, control, label):
+        self.control = control
+        self.label = label
+
+    def find_elements(self, by, selector):
+        if by == By.XPATH and selector == "//input|//select|//textarea":
+            return [self.control]
+        if by == By.XPATH and selector.startswith("//label[@for="):
+            return [self.label]
+        if by == By.XPATH and selector == "//dt[normalize-space(.)!='' and following-sibling::dd[1]]":
+            return []
+        return []
+
+
+def test_extract_label_value_fields_preserves_unknown_labeled_empty_control():
+    control = _FakeElement(attrs={"id": "mystery_field", "value": ""})
+    label = _FakeElement(tag_name="label", text="Campo Desconocido")
+    driver = _FakeDriver(control, label)
+
+    fields = client.extract_label_value_fields(driver)
+
+    assert fields["Campo Desconocido"] == ""
+
+
+def test_extract_label_value_fields_does_not_mutate_or_click_controls():
+    source = inspect.getsource(client.extract_label_value_fields)
+
+    assert ".click(" not in source
+    assert ".clear(" not in source
+    assert ".send_keys(" not in source
