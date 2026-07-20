@@ -755,7 +755,7 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
           ).filter((cells) => cells.some(Boolean));
           return { index: tableIndex + 1, rows };
         }).filter((table) => table.rows.length > 0);
-        return { fields, tables, text: norm(document.body ? document.body.innerText : '') };
+        return { fields, tables, text: '' };
         """
     ) or {"fields": [], "tables": [], "text": ""}
 

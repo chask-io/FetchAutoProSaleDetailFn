@@ -261,6 +261,7 @@ def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
             assert "querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])')" in script
             assert "querySelectorAll('button" not in script
             assert "querySelectorAll('input, select, textarea')" not in script
+            assert "document.body ? document.body.innerText" not in script
             return {
                 "fields": [{"label": "Comentario", "value": "texto"}, {"label": "Campo Vacio", "value": ""}],
                 "tables": [{"index": 1, "rows": rows}],
