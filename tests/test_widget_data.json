@@ -1,0 +1,21 @@
+{
+  "function_name": "FetchAutoProSaleDetailFn",
+  "test_type": "widget_data",
+  "args": {
+    "node_id": "test-node-id",
+    "folio": "7954",
+    "branch": "698"
+  },
+  "widget_params": {
+    "widget_param_1": "test-autopro-user",
+    "widget_param_2": "test-autopro-password"
+  },
+  "prompt": "Prueba de resolucion de credenciales widget para extraer folio 7954.",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": [],
+  "metadata": {
+    "description": "Widget-data fixture for AutoPro username/password secrets.",
+    "expected_status": "success"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "function_name": "FetchAutoProSaleDetailFn",
+  "test_type": "operator_params",
+  "args": {},
+  "widget_params": {
+    "widget_param_1": "test-autopro-user",
+    "widget_param_2": "test-autopro-password"
+  },
+  "prompt": "Necesito revisar en AutoPro la nota de venta del folio 7954, sucursal 698, y traer el comentario, forma de pago y descuentos del wizard.",
+  "event_type": "function_call",
+  "extra_params": {
+    "is_operator_params_test": true
+  },
+  "files": [],
+  "metadata": {
+    "description": "Operator params fixture should infer folio 7954 and branch 698.",
+    "expected_status": "success"
+  }
+}

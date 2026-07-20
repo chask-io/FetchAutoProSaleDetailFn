@@ -1,0 +1,4 @@
+# Runtime dependencies are provided by layers:
+# - foundationMinimal
+# - foundationApi
+# - custom/browserbase_layer (browserbase, selenium, requests)

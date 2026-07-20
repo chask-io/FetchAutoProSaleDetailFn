@@ -1,0 +1,1 @@
+Fixture marker for FetchAutoProSaleDetailFn file-handling suite coverage.

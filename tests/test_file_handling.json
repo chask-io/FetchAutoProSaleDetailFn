@@ -1,0 +1,23 @@
+{
+  "function_name": "FetchAutoProSaleDetailFn",
+  "test_type": "file_handling",
+  "args": {
+    "node_id": "test-node-id",
+    "folio": "7954",
+    "branch": "698"
+  },
+  "widget_params": {
+    "widget_param_1": "test-autopro-user",
+    "widget_param_2": "test-autopro-password"
+  },
+  "prompt": "Ejecuta la lectura de detalle AutoPro para folio 7954. El archivo adjunto es solo marcador de cobertura de suite.",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": [
+    "test_files/folio_7954_marker.txt"
+  ],
+  "metadata": {
+    "description": "File-handling fixture required by this milestone; function ignores marker file.",
+    "expected_status": "success"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "function_name": "FetchAutoProSaleDetailFn",
+  "args": {
+    "node_id": "test-node-id",
+    "folio": "7954",
+    "branch": "698"
+  },
+  "widget_params": {
+    "widget_param_1": "test-autopro-user",
+    "widget_param_2": "test-autopro-password"
+  },
+  "prompt": "Extrae el detalle de AutoPro para el folio 7954 en la sucursal 698.",
+  "event_type": "function_call",
+  "extra_params": {},
+  "files": [],
+  "metadata": {
+    "description": "Basic test for FetchAutoProSaleDetailFn",
+    "expected_status": "success"
+  }
+}
