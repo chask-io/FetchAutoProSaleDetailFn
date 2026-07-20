@@ -34,6 +34,10 @@ class AutoProReadOnlyViolation(RuntimeError):
 class AutoProDetailUnavailableError(RuntimeError):
     """Raised for portal/network/detail extraction failures."""
 
+    def __init__(self, message: str, *, diagnostics: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
+
 
 @dataclass
 class AutoProSaleDetail:
@@ -110,6 +114,7 @@ class AutoProSaleDetailClient:
         self.verbose = verbose
         self.max_seconds = _positive_int_env("AUTOPRO_DETAIL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
         self._session_id: Optional[str] = None
+        self._diagnostics: dict[str, Any] = {}
 
     def fetch_detail(self) -> AutoProSaleDetail:
         deadline = _OperationDeadline(self.max_seconds)
@@ -227,6 +232,7 @@ class AutoProSaleDetailClient:
         Select(access.find_element(By.ID, "branch")).select_by_value(self.branch)
         self._wait_for_select_option(access, "module", MODULE_ID)
         Select(access.find_element(By.ID, "module")).select_by_value(MODULE_ID)
+        self._diagnostics["selected_context"] = selected_context_state(driver)
         access.click(wait.until(EC.element_to_be_clickable((By.ID, "LoginOk"))), label="LoginOk")
         driver.switch_to.default_content()
         time.sleep(8)
@@ -250,12 +256,19 @@ class AutoProSaleDetailClient:
 
     def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
         self._switch_to_grid(driver)
-        apply_grid_filters_for_folio(access, self.folio)
+        diagnostics = dict(self._diagnostics)
+        diagnostics["filters_before"] = visible_filter_control_metadata(driver)
+        diagnostics["applied_filters"] = apply_grid_filters_for_folio(access, self.folio)
+        diagnostics["filters_after"] = visible_filter_control_metadata(driver)
         search = find_grid_search_button(access)
         access.click(search, label="Buscar")
         time.sleep(3)
+        diagnostics["post_search"] = grid_result_markers(driver, self.folio)
         if not page_contains_text(driver, self.folio):
-            raise AutoProDetailUnavailableError(f"Folio {self.folio} not found in AutoPro grid after filtering")
+            raise AutoProDetailUnavailableError(
+                f"Folio {self.folio} not found in AutoPro grid after filtering",
+                diagnostics=diagnostics,
+            )
         self._log("Folio filter applied: %s", self.folio)
 
     def _open_edit_wizard(self, driver, access: ReadOnlyElementAccess, wait) -> None:
@@ -459,9 +472,10 @@ def find_grid_search_button(access: ReadOnlyElementAccess):
         )
 
 
-def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> None:
+def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> dict[str, Any]:
     from selenium.webdriver.common.by import By
 
+    applied: dict[str, Any] = {"date_filters": [], "folio_filter": None}
     date_to = date.today().strftime("%d-%m-%Y")
     for selector, value in [
         ("ctl00_PageContent_FechaFromFilter", GRID_SEARCH_START_DATE),
@@ -471,6 +485,7 @@ def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> N
         if elements:
             elements[0].clear()
             elements[0].send_keys(value)
+            applied["date_filters"].append({"id": selector, "value_set": value})
 
     folio_input = AutoProSaleDetailClient._first_present(
         access,
@@ -484,6 +499,134 @@ def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> N
     )
     folio_input.clear()
     folio_input.send_keys(folio)
+    applied["folio_filter"] = {
+        "target": element_metadata(folio_input, include_value=True),
+        "value_set": folio,
+    }
+    return applied
+
+
+def selected_context_state(driver) -> dict[str, Any]:
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import Select
+
+    state: dict[str, Any] = {}
+    for select_id in ["business", "branch", "module"]:
+        elements = driver.find_elements(By.ID, select_id)
+        if not elements:
+            state[select_id] = {"present": False}
+            continue
+        element = elements[0]
+        selected_value = element.get_attribute("value") or ""
+        selected_text = ""
+        try:
+            selected_text = normalize_space(Select(element).first_selected_option.text)
+        except Exception:
+            selected_text = ""
+        state[select_id] = {
+            "present": True,
+            "value": selected_value,
+            "selected_text": selected_text,
+        }
+    return state
+
+
+def visible_filter_control_metadata(driver) -> list[dict[str, Any]]:
+    from selenium.webdriver.common.by import By
+
+    controls = []
+    for element in driver.find_elements(By.CSS_SELECTOR, "input[id*='Filter'], input[name*='Filter'], select[id*='Filter'], select[name*='Filter'], textarea[id*='Filter'], textarea[name*='Filter']"):
+        try:
+            if element.is_displayed():
+                metadata = element_metadata(element, include_value=True)
+                if metadata:
+                    controls.append(metadata)
+        except Exception:
+            continue
+    return controls[:80]
+
+
+def element_metadata(element, *, include_value: bool) -> dict[str, Any]:
+    tag = (element.tag_name or "").lower()
+    control_type = (element.get_attribute("type") or "").lower()
+    if control_type == "password":
+        return {}
+    metadata = {
+        "tag": tag,
+        "id": element.get_attribute("id") or "",
+        "name": element.get_attribute("name") or "",
+        "type": control_type,
+        "placeholder": element.get_attribute("placeholder") or "",
+        "title": element.get_attribute("title") or "",
+        "aria_label": element.get_attribute("aria-label") or "",
+    }
+    if include_value:
+        metadata["value"] = safe_control_value(element, metadata)
+    return metadata
+
+
+def safe_control_value(element, metadata: dict[str, Any]) -> str:
+    haystack = normalize_key(
+        " ".join(
+            [
+                metadata.get("id", ""),
+                metadata.get("name", ""),
+                metadata.get("placeholder", ""),
+                metadata.get("title", ""),
+                metadata.get("aria_label", ""),
+            ]
+        )
+    )
+    if any(term in haystack for term in ["cliente", "rut", "nombre", "apellido", "email", "correo", "telefono"]):
+        return "[redacted-if-present]" if element.get_attribute("value") else ""
+    return element.get_attribute("value") or ""
+
+
+def grid_result_markers(driver, folio: str) -> dict[str, Any]:
+    from selenium.webdriver.common.by import By
+
+    markers: dict[str, Any] = {
+        "folio_visible": page_contains_text(driver, folio),
+        "empty_state": empty_grid_marker(driver),
+        "safe_rows": [],
+    }
+    rows = driver.find_elements(By.XPATH, "//table//tr")
+    for index, row in enumerate(rows[:50], start=1):
+        cells = [normalize_space(cell.text) for cell in row.find_elements(By.XPATH, "./th|./td")]
+        if not any(cells):
+            continue
+        safe_cells = safe_row_identifiers(cells, folio)
+        if safe_cells:
+            markers["safe_rows"].append({"row_index": index, "identifiers": safe_cells})
+    return markers
+
+
+def safe_row_identifiers(cells: list[str], folio: str) -> list[str]:
+    safe = []
+    for cell in cells:
+        if not cell:
+            continue
+        if folio in cell:
+            safe.append(cell[:80])
+            continue
+        normalized = normalize_text(cell)
+        if normalized in {"editar", "ver", "seleccionar", "modificar"}:
+            safe.append(cell[:40])
+    return safe[:6]
+
+
+def empty_grid_marker(driver) -> Optional[str]:
+    text = normalize_text(visible_body_text(driver))
+    for marker in [
+        "no se encontraron",
+        "sin registros",
+        "no existen registros",
+        "no hay registros",
+        "no records",
+    ]:
+        if marker in text:
+            return marker
+    return None
 
 
 def wizard_ready(driver) -> bool:

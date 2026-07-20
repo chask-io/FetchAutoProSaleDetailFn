@@ -2,7 +2,7 @@ import json
 from types import SimpleNamespace
 
 from backend import function_logic
-from backend.autopro_detail_client import AutoProSaleDetail
+from backend.autopro_detail_client import AutoProDetailUnavailableError, AutoProSaleDetail
 
 
 def make_event(args, widget_values=None):
@@ -105,6 +105,32 @@ def test_process_request_returns_structured_unavailable_on_live_error(monkeypatc
     assert payload["vin_or_unidad_id"] is None
     assert payload["detalle_raw"] == {}
     assert payload["mensaje_tecnico"] == "portal timeout"
+
+
+def test_process_request_includes_grid_diagnostics_on_unavailable(monkeypatch):
+    class DiagnosticClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch_detail(self):
+            raise AutoProDetailUnavailableError(
+                "grid miss",
+                diagnostics={
+                    "selected_context": {"branch": {"value": "698"}},
+                    "filters_after": [{"id": "ctl00_PageContent_FolioFilter", "value": "7954"}],
+                    "post_search": {"folio_visible": False, "empty_state": "no se encontraron"},
+                },
+            )
+
+    monkeypatch.setattr(function_logic, "AutoProSaleDetailClient", DiagnosticClient)
+
+    result = function_logic.FunctionBackend(make_event({"folio": "7954"})).process_request()
+    payload = payload_from_result(result)
+
+    assert payload["status"] == "unavailable"
+    assert payload["diagnostico_grid"]["selected_context"]["branch"]["value"] == "698"
+    assert payload["diagnostico_grid"]["filters_after"][0]["value"] == "7954"
+    assert payload["diagnostico_grid"]["post_search"]["empty_state"] == "no se encontraron"
 
 
 def test_empty_credentials_skip_browserbase(monkeypatch):

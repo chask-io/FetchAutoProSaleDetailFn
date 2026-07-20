@@ -91,6 +91,7 @@ class FunctionBackend:
                     folio=folio,
                     branch=branch,
                     mensaje_tecnico=_safe_error_message(exc),
+                    diagnostico_grid=getattr(exc, "diagnostics", None),
                 )
             )
 
@@ -112,8 +113,14 @@ def get_browserbase_credentials() -> Tuple[str, str]:
     return str(api_key), str(project_id)
 
 
-def unavailable_result(*, folio: str, branch: str, mensaje_tecnico: str) -> Dict[str, Any]:
-    return {
+def unavailable_result(
+    *,
+    folio: str,
+    branch: str,
+    mensaje_tecnico: str,
+    diagnostico_grid: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    result = {
         "status": "unavailable",
         "tenant_id": TENANT_SLUG,
         "folio": folio or None,
@@ -134,6 +141,9 @@ def unavailable_result(*, folio: str, branch: str, mensaje_tecnico: str) -> Dict
         "fecha_entrega": None,
         "mensaje_tecnico": mensaje_tecnico,
     }
+    if diagnostico_grid:
+        result["diagnostico_grid"] = diagnostico_grid
+    return result
 
 
 def format_result(result: Dict[str, Any]) -> str:

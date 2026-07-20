@@ -225,3 +225,21 @@ def test_apply_grid_filters_sets_broad_date_window_and_folio(monkeypatch):
     assert access.to_date.sent_values == ["20-07-2026"]
     assert access.folio.cleared is True
     assert access.folio.sent_values == ["7954"]
+
+
+def test_element_metadata_excludes_password_and_redacts_client_filter_value():
+    password = _FakeElement(attrs={"id": "PasswordFilter", "type": "password", "value": "secret"})
+    client_filter = _FakeElement(
+        attrs={"id": "ctl00_PageContent_ClienteFilter", "type": "text", "value": "CLIENTE PRIVADO"}
+    )
+    folio_filter = _FakeElement(attrs={"id": "ctl00_PageContent_FolioFilter", "type": "text", "value": "7954"})
+
+    assert client.element_metadata(password, include_value=True) == {}
+    assert client.element_metadata(client_filter, include_value=True)["value"] == "[redacted-if-present]"
+    assert client.element_metadata(folio_filter, include_value=True)["value"] == "7954"
+
+
+def test_safe_row_identifiers_keep_only_folio_and_actions():
+    cells = ["7954", "CLIENTE PRIVADO", "Editar", "12.345.678-9", "Otro dato"]
+
+    assert client.safe_row_identifiers(cells, "7954") == ["7954", "Editar"]
