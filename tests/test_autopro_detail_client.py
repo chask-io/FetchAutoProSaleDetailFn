@@ -248,3 +248,29 @@ def test_safe_row_identifiers_keep_only_folio_and_actions():
     cells = ["7954", "CLIENTE PRIVADO", "Editar", "12.345.678-9", "Otro dato"]
 
     assert client.safe_row_identifiers(cells, "7954") == ["7954", "Editar"]
+
+
+def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
+    rows = [["Header", "Value"]] + [[f"row-{index}", str(index)] for index in range(1, 121)]
+
+    class Driver:
+        def execute_script(self, script):
+            assert "click" not in script
+            assert "Guardar" not in script
+            assert "Finalizar" not in script
+            assert "querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])')" in script
+            assert "querySelectorAll('button" not in script
+            assert "querySelectorAll('input, select, textarea')" not in script
+            return {
+                "fields": [{"label": "Comentario", "value": "texto"}, {"label": "Campo Vacio", "value": ""}],
+                "tables": [{"index": 1, "rows": rows}],
+                "text": "Resumen Venta",
+            }
+
+    tab = client.extract_current_tab(Driver())
+
+    assert tab["fields"]["Comentario"] == "texto"
+    assert tab["fields"]["Campo Vacio"] == ""
+    assert len(tab["tables"][0]["rows"]) == 121
+    assert tab["tables"][0]["rows"][-1] == ["row-120", "120"]
+    assert all("truncated" not in " ".join(row).lower() for row in tab["tables"][0]["rows"])

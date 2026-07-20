@@ -21,6 +21,7 @@ DEFAULT_WAIT_SECONDS = 20
 PAGE_LOAD_TIMEOUT_SECONDS = 30
 SCRIPT_TIMEOUT_SECONDS = 30
 GRID_SEARCH_START_DATE = "01-01-2010"
+MIN_SECONDS_FOR_NEXT_TAB = 12
 
 FORBIDDEN_UI_TERMS = ("guardar", "finalizar")
 SAFE_NEXT_LABEL = "Siguiente"
@@ -300,6 +301,7 @@ class AutoProSaleDetailClient:
         tabs: dict[str, Any] = {}
         visited = set()
         safety_steps = 0
+        extraction_notes = []
 
         while safety_steps < 20:
             deadline.raise_if_expired()
@@ -308,9 +310,26 @@ class AutoProSaleDetailClient:
             tab_name = current_tab_name(driver) or f"tab_{safety_steps + 1}"
             normalized = normalize_key(tab_name)
             if normalized not in visited:
+                started = time.monotonic()
                 tabs[tab_name] = extract_current_tab(driver)
+                extraction_notes.append(
+                    {
+                        "tab": tab_name,
+                        "fields_count": len(tabs[tab_name].get("fields", {})),
+                        "tables_count": len(tabs[tab_name].get("tables", [])),
+                        "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    }
+                )
                 visited.add(normalized)
 
+            if deadline.remaining_seconds() < MIN_SECONDS_FOR_NEXT_TAB:
+                extraction_notes.append(
+                    {
+                        "status": "stopped_before_next_tab_due_to_deadline",
+                        "remaining_seconds": round(deadline.remaining_seconds(), 2),
+                    }
+                )
+                break
             next_button = find_safe_next_button(driver)
             if next_button is None:
                 break
@@ -322,6 +341,7 @@ class AutoProSaleDetailClient:
             "folio": self.folio,
             "tabs": tabs,
             "tab_order": list(tabs.keys()),
+            "extraction_notes": extraction_notes,
         }
 
     def _switch_to_grid(self, driver, timeout: float = 25.0) -> None:
@@ -665,11 +685,79 @@ def current_tab_name(driver) -> Optional[str]:
 
 
 def extract_current_tab(driver) -> dict[str, Any]:
+    snapshot = execute_read_only_tab_snapshot(driver)
+    fields: dict[str, Any] = {}
+    for item in snapshot.get("fields", []):
+        label = normalize_space(item.get("label", ""))
+        if not label:
+            continue
+        add_multivalue(fields, label, normalize_space(item.get("value", "")))
     return {
-        "fields": extract_label_value_fields(driver),
-        "tables": extract_tables(driver),
-        "text": visible_body_text(driver),
+        "fields": fields,
+        "tables": snapshot.get("tables", []),
+        "text": normalize_space(snapshot.get("text", "")),
     }
+
+
+def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
+    return driver.execute_script(
+        """
+        const norm = (value) => (value || '').toString().replace(/\\s+/g, ' ').trim();
+        const visible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 || rect.height > 0;
+        };
+        const labelFor = (control) => {
+          if (control.id) {
+            const explicit = document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+            if (explicit && norm(explicit.innerText)) return norm(explicit.innerText);
+          }
+          const group = control.closest('.form-group, .form-item, .control-group, td, div');
+          if (group) {
+            const label = group.querySelector('label');
+            if (label && norm(label.innerText)) return norm(label.innerText);
+          }
+          let previous = control.previousElementSibling;
+          while (previous) {
+            if (previous.tagName && previous.tagName.toLowerCase() === 'label' && norm(previous.innerText)) {
+              return norm(previous.innerText);
+            }
+            previous = previous.previousElementSibling;
+          }
+          return norm(control.getAttribute('name') || control.id || '');
+        };
+        const valueFor = (control) => {
+          const tag = (control.tagName || '').toLowerCase();
+          if (tag === 'select') {
+            const selected = control.options && control.selectedIndex >= 0 ? control.options[control.selectedIndex] : null;
+            return norm(selected ? selected.text : control.value);
+          }
+          return norm(control.value != null ? control.value : control.innerText);
+        };
+        const fields = Array.from(document.querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])'))
+          .filter(visible)
+          .filter((control) => (control.getAttribute('type') || '').toLowerCase() !== 'password')
+          .map((control) => ({ label: labelFor(control), value: valueFor(control) }))
+          .filter((item) => item.label);
+        Array.from(document.querySelectorAll('dt')).filter(visible).forEach((dt) => {
+          const dd = dt.nextElementSibling;
+          if (dd && dd.tagName && dd.tagName.toLowerCase() === 'dd') {
+            const label = norm(dt.innerText);
+            if (label) fields.push({ label, value: norm(dd.innerText) });
+          }
+        });
+        const tables = Array.from(document.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
+          const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+            Array.from(row.querySelectorAll('th,td')).map((cell) => norm(cell.innerText))
+          ).filter((cells) => cells.some(Boolean));
+          return { index: tableIndex + 1, rows };
+        }).filter((table) => table.rows.length > 0);
+        return { fields, tables, text: norm(document.body ? document.body.innerText : '') };
+        """
+    ) or {"fields": [], "tables": [], "text": ""}
 
 
 def extract_label_value_fields(driver) -> dict[str, Any]:
