@@ -111,6 +111,26 @@ def test_promote_detail_falls_back_to_codigo_interno_for_identity_key():
     assert promoted["vin_or_unidad_id"] == "UNI-7954"
 
 
+def test_promote_detail_uses_autopro_precio_venta_descuento_aliases():
+    raw = {
+        "tabs": {
+            "Datos Vehículo": {
+                "fields": {
+                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento": "$ -2.962.148",
+                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento_Pje": "-12,09",
+                },
+                "tables": [],
+                "text": "",
+            }
+        }
+    }
+
+    promoted = client.promote_detail(raw)
+
+    assert promoted["dcto_recargo_amount"] == "$ -2.962.148"
+    assert promoted["dcto_recargo_pct"] == "-12,09"
+
+
 class _FakeElement:
     def __init__(self, *, tag_name="input", text="", attrs=None, displayed=True, children=None):
         self.tag_name = tag_name

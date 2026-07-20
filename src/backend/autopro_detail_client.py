@@ -1108,8 +1108,8 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
         "tipo_venta_detalle": first_value_by_label(all_fields, ["tipo venta", "tipo de venta", "tipo venta detalle"]),
         "forma_pago": forma_pago_payload(forma_pago_tab),
         "bono_descuento": first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
-        "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %"]),
-        "dcto_recargo_amount": first_value_by_label(all_fields, ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento"]),
+        "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %", "precio_venta_descuento_pje", "precio venta descuento pje"]),
+        "dcto_recargo_amount": first_value_by_label(all_fields, ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento", "precio_venta_descuento", "precio venta descuento"]),
         "total_vehiculo_cliente": first_value_by_label(all_fields, ["total vehiculo cliente", "total vehiculo", "total cliente"]),
         "fecha_entrega": first_value_by_label(all_fields, ["fecha entrega", "fecha de entrega"]),
     }
