@@ -147,11 +147,26 @@ def unavailable_result(
 
 
 def format_result(result: Dict[str, Any]) -> str:
+    attach_response_diagnostics(result)
     if result.get("status") == "success":
         header = f"Detalle AutoPro extraido para folio {result.get('folio')}."
     else:
         header = f"Detalle AutoPro no disponible para folio {result.get('folio') or 'desconocido'}."
     return f"{header}\nRESULT_JSON: {json.dumps(result, ensure_ascii=False, sort_keys=True)}"
+
+
+def attach_response_diagnostics(result: Dict[str, Any]) -> None:
+    diagnostics = result.setdefault("diagnostico_respuesta", {})
+    diagnostics["tab_body_text_serialized"] = False
+    last_size = -1
+    while True:
+        serialized = json.dumps(result, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        size = len(serialized)
+        if size == last_size:
+            diagnostics["serialized_bytes"] = size
+            return
+        diagnostics["serialized_bytes"] = size
+        last_size = size
 
 
 def _safe_error_message(exc: Exception) -> str:

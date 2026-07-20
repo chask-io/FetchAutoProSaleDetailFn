@@ -265,13 +265,14 @@ def test_extract_current_tab_bulk_snapshot_preserves_large_tables():
             return {
                 "fields": [{"label": "Comentario", "value": "texto"}, {"label": "Campo Vacio", "value": ""}],
                 "tables": [{"index": 1, "rows": rows}],
-                "text": "Resumen Venta",
+                "text": "",
             }
 
     tab = client.extract_current_tab(Driver())
 
     assert tab["fields"]["Comentario"] == "texto"
     assert tab["fields"]["Campo Vacio"] == ""
+    assert tab["text"] == ""
     assert len(tab["tables"][0]["rows"]) == 121
     assert tab["tables"][0]["rows"][-1] == ["row-120", "120"]
     assert all("truncated" not in " ".join(row).lower() for row in tab["tables"][0]["rows"])

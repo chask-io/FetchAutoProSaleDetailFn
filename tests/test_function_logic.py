@@ -51,14 +51,37 @@ def test_process_request_returns_promoted_detail(monkeypatch):
                 folio="7954",
                 branch="698",
                 browserbase_session_id="bb-session",
-                detalle_raw={"tabs": {"Resumen Venta": {"fields": {"Comentario": "texto"}, "tables": [], "text": "texto"}}},
+                detalle_raw={
+                    "tabs": {
+                        "Forma de Pago": {
+                            "fields": {"Forma Pago": "Contado"},
+                            "tables": [{"index": 1, "rows": [["Medio", "Monto"], ["Contado", "$10"]]}],
+                            "text": "",
+                        },
+                        "Resumen Venta": {
+                            "fields": {
+                                "Comentario": "texto",
+                                "Bono Descuento": "",
+                                "% Dcto Recargo": "0",
+                                "Dcto Recargo": "$0",
+                            },
+                            "tables": [{"index": 2, "rows": [["Total", "$10"]]}],
+                            "text": "",
+                        },
+                    },
+                    "tab_order": ["Forma de Pago", "Resumen Venta"],
+                },
                 promoted={
                     "comentario": "texto",
                     "numero_chasis": "CH123",
                     "vin_or_unidad_id": "VIN987",
                     "uso_vehiculo": "Particular",
                     "tipo_venta_detalle": "Retail",
-                    "forma_pago": {"fields": {"Forma Pago": "Contado"}, "tables": [], "text": "Contado"},
+                    "forma_pago": {
+                        "fields": {"Forma Pago": "Contado"},
+                        "tables": [{"index": 1, "rows": [["Medio", "Monto"], ["Contado", "$10"]]}],
+                        "text": "",
+                    },
                     "bono_descuento": "$1",
                     "dcto_recargo_pct": "0",
                     "dcto_recargo_amount": "$0",
@@ -82,7 +105,14 @@ def test_process_request_returns_promoted_detail(monkeypatch):
     assert payload["vin_or_unidad_id"] == "VIN987"
     assert payload["comentario"] == "texto"
     assert payload["forma_pago"]["fields"]["Forma Pago"] == "Contado"
+    assert payload["forma_pago"]["tables"][0]["rows"][1] == ["Contado", "$10"]
     assert payload["detalle_raw"]["tabs"]["Resumen Venta"]["fields"]["Comentario"] == "texto"
+    assert payload["detalle_raw"]["tabs"]["Resumen Venta"]["fields"]["Bono Descuento"] == ""
+    assert payload["detalle_raw"]["tabs"]["Resumen Venta"]["tables"][0]["rows"][0] == ["Total", "$10"]
+    assert payload["detalle_raw"]["tabs"]["Resumen Venta"]["text"] == ""
+    assert payload["diagnostico_respuesta"]["tab_body_text_serialized"] is False
+    assert isinstance(payload["diagnostico_respuesta"]["serialized_bytes"], int)
+    assert payload["diagnostico_respuesta"]["serialized_bytes"] > 0
 
 
 def test_process_request_returns_structured_unavailable_on_live_error(monkeypatch):
