@@ -255,7 +255,11 @@ def test_extract_current_tab_bulk_snapshot_scopes_active_root_and_preserves_larg
     hidden_sibling_rows = [["Hidden", "Value"]] + [[f"hidden-{index}", str(index)] for index in range(1, 200)]
 
     class Driver:
-        def execute_script(self, script):
+        def __init__(self):
+            self.target_fragment = None
+
+        def execute_script(self, script, target_fragment=""):
+            self.target_fragment = target_fragment
             assert "click" not in script
             assert "Guardar" not in script
             assert "Finalizar" not in script
@@ -269,15 +273,108 @@ def test_extract_current_tab_bulk_snapshot_scopes_active_root_and_preserves_larg
                 "fields": [{"label": "Comentario", "value": "texto"}, {"label": "Campo Vacio", "value": ""}],
                 "tables": [{"index": 1, "rows": active_rows}],
                 "text": "",
+                "meta": {
+                    "root_source": "direct-target",
+                    "root_tag": "div",
+                    "root_id": "panel-resumen",
+                    "root_class": "tab-pane active",
+                    "fields_count": 2,
+                    "tables_count": 1,
+                    "rows_count": len(active_rows),
+                    "cells_count": sum(len(row) for row in active_rows),
+                },
             }
 
-    tab = client.extract_current_tab(Driver())
+    driver = Driver()
+    tab = client.extract_current_tab(
+        driver,
+        active_tab={
+            "tag": "a",
+            "id": "tab-resumen-link",
+            "class": "active",
+            "aria_controls": "panel-resumen",
+            "href_fragment": "",
+            "source": "[aria-selected=\"true\"][aria-controls]",
+        },
+    )
 
+    assert driver.target_fragment == "panel-resumen"
     assert tab["fields"]["Comentario"] == "texto"
     assert tab["fields"]["Campo Vacio"] == ""
     assert tab["text"] == ""
+    assert tab["_snapshot_meta"]["root_source"] == "direct-target"
+    assert tab["_snapshot_meta"]["active_id"] == "tab-resumen-link"
+    assert tab["_snapshot_meta"]["active_aria_controls"] == "panel-resumen"
     assert len(hidden_sibling_rows) == 200
     assert len(tab["tables"][0]["rows"]) == 121
     assert tab["tables"][0]["rows"][-1] == ["row-120", "120"]
     assert all("hidden-" not in " ".join(row) for row in tab["tables"][0]["rows"])
     assert all("truncated" not in " ".join(row).lower() for row in tab["tables"][0]["rows"])
+
+
+def test_extract_current_tab_direct_target_prefers_aria_controls_over_href():
+    class Driver:
+        def __init__(self):
+            self.target_fragment = None
+
+        def execute_script(self, script, target_fragment=""):
+            self.target_fragment = target_fragment
+            assert "const directPanel = panelFromId(targetFragment)" in script
+            assert "root_source: rootChoice.source" in script
+            return {
+                "fields": [{"label": "Campo", "value": "valor"}],
+                "tables": [],
+                "text": "",
+                "meta": {"root_source": "direct-target", "root_id": "panel-aria"},
+            }
+
+    driver = Driver()
+
+    tab = client.extract_current_tab(
+        driver,
+        active_tab={
+            "tag": "a",
+            "id": "tab-active",
+            "class": "active",
+            "aria_controls": "panel-aria",
+            "href_fragment": "panel-href",
+            "source": "unit",
+        },
+    )
+
+    assert driver.target_fragment == "panel-aria"
+    assert tab["fields"]["Campo"] == "valor"
+    assert tab["_snapshot_meta"]["root_source"] == "direct-target"
+    assert tab["_snapshot_meta"]["root_id"] == "panel-aria"
+    assert tab["_snapshot_meta"]["active_id"] == "tab-active"
+    assert tab["_snapshot_meta"]["active_source"] == "unit"
+
+
+def test_extract_current_tab_logs_fallback_source_when_no_direct_target():
+    class Driver:
+        def __init__(self):
+            self.target_fragment = None
+
+        def execute_script(self, script, target_fragment=""):
+            self.target_fragment = target_fragment
+            assert "fallback-active-target" in script
+            return {
+                "fields": [{"label": "Campo", "value": ""}],
+                "tables": [],
+                "text": "",
+                "meta": {
+                    "root_source": "fallback-active-target",
+                    "active_id": "fallback-tab",
+                    "active_href_fragment": "fallback-panel",
+                },
+            }
+
+    driver = Driver()
+
+    tab = client.extract_current_tab(driver, active_tab={})
+
+    assert driver.target_fragment == ""
+    assert tab["fields"]["Campo"] == ""
+    assert tab["_snapshot_meta"]["root_source"] == "fallback-active-target"
+    assert tab["_snapshot_meta"]["active_id"] == "fallback-tab"
+    assert tab["_snapshot_meta"]["active_href_fragment"] == "fallback-panel"

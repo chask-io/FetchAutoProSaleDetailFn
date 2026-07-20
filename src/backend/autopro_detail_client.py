@@ -311,12 +311,34 @@ class AutoProSaleDetailClient:
             normalized = normalize_key(tab_name)
             if normalized not in visited:
                 started = time.monotonic()
-                tabs[tab_name] = extract_current_tab(driver)
+                active_tab = active_tab_metadata(driver)
+                tab_snapshot = extract_current_tab(driver, active_tab=active_tab)
+                snapshot_meta = tab_snapshot.pop("_snapshot_meta", {})
+                tabs[tab_name] = tab_snapshot
+                snapshot_metrics = tab_snapshot_metrics(tabs[tab_name], snapshot_meta)
+                logger.info(
+                    "AutoPro tab snapshot tab=%s active_tag=%s active_id=%s active_class=%s active_aria_controls=%s active_href_fragment=%s root_tag=%s root_id=%s root_class=%s root_source=%s fields=%s tables=%s rows=%s cells=%s bytes=%s elapsed_ms=%s",
+                    tab_name,
+                    snapshot_metrics.get("active_tag", ""),
+                    snapshot_metrics.get("active_id", ""),
+                    snapshot_metrics.get("active_class", ""),
+                    snapshot_metrics.get("active_aria_controls", ""),
+                    snapshot_metrics.get("active_href_fragment", ""),
+                    snapshot_metrics.get("root_tag", ""),
+                    snapshot_metrics.get("root_id", ""),
+                    snapshot_metrics.get("root_class", ""),
+                    snapshot_metrics.get("root_source", ""),
+                    snapshot_metrics["fields_count"],
+                    snapshot_metrics["tables_count"],
+                    snapshot_metrics["rows_count"],
+                    snapshot_metrics["cells_count"],
+                    snapshot_metrics["serialized_bytes"],
+                    round((time.monotonic() - started) * 1000),
+                )
                 extraction_notes.append(
                     {
                         "tab": tab_name,
-                        "fields_count": len(tabs[tab_name].get("fields", {})),
-                        "tables_count": len(tabs[tab_name].get("tables", [])),
+                        **snapshot_metrics,
                         "elapsed_ms": round((time.monotonic() - started) * 1000),
                     }
                 )
@@ -684,8 +706,22 @@ def current_tab_name(driver) -> Optional[str]:
     return None
 
 
-def extract_current_tab(driver) -> dict[str, Any]:
-    snapshot = execute_read_only_tab_snapshot(driver)
+def extract_current_tab(driver, *, active_tab: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    active_tab = active_tab or {}
+    target_fragment = active_tab.get("aria_controls") or active_tab.get("href_fragment") or ""
+    snapshot = execute_read_only_tab_snapshot(driver, target_fragment=target_fragment)
+    snapshot_meta = snapshot.get("meta", {})
+    if not isinstance(snapshot_meta, dict):
+        snapshot_meta = {}
+    snapshot_meta = {
+        **snapshot_meta,
+        "active_tag": active_tab.get("tag", snapshot_meta.get("active_tag", "")),
+        "active_id": active_tab.get("id", snapshot_meta.get("active_id", "")),
+        "active_class": active_tab.get("class", snapshot_meta.get("active_class", "")),
+        "active_aria_controls": active_tab.get("aria_controls", snapshot_meta.get("active_aria_controls", "")),
+        "active_href_fragment": active_tab.get("href_fragment", snapshot_meta.get("active_href_fragment", "")),
+        "active_source": active_tab.get("source", snapshot_meta.get("active_source", "")),
+    }
     fields: dict[str, Any] = {}
     for item in snapshot.get("fields", []):
         label = normalize_space(item.get("label", ""))
@@ -696,12 +732,57 @@ def extract_current_tab(driver) -> dict[str, Any]:
         "fields": fields,
         "tables": snapshot.get("tables", []),
         "text": normalize_space(snapshot.get("text", "")),
+        "_snapshot_meta": snapshot_meta,
     }
 
 
-def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
+def active_tab_metadata(driver) -> dict[str, Any]:
     return driver.execute_script(
         """
+        const visible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 || rect.height > 0;
+        };
+        const safeClass = (el) => el && el.className ? el.className.toString().slice(0, 160) : '';
+        const hrefFragment = (el) => {
+          const href = el ? (el.getAttribute('href') || '') : '';
+          if (!href || !href.startsWith('#')) return '';
+          return href.slice(1);
+        };
+        const selectors = [
+          '[aria-selected="true"][aria-controls]',
+          '[aria-selected="true"][href^="#"]',
+          '.active[aria-controls]',
+          '.active[href^="#"]',
+          'li.active [aria-controls]',
+          'li.active a[href^="#"]'
+        ];
+        for (const selector of selectors) {
+          for (const candidate of Array.from(document.querySelectorAll(selector))) {
+            if (visible(candidate)) {
+              return {
+                tag: candidate.tagName ? candidate.tagName.toLowerCase() : '',
+                id: candidate.id || '',
+                class: safeClass(candidate),
+                aria_controls: candidate.getAttribute('aria-controls') || '',
+                href_fragment: hrefFragment(candidate),
+                source: selector
+              };
+            }
+          }
+        }
+        return {};
+        """
+    ) or {}
+
+
+def execute_read_only_tab_snapshot(driver, *, target_fragment: str = "") -> dict[str, Any]:
+    return driver.execute_script(
+        """
+        const targetFragment = arguments[0] || '';
         const norm = (value) => (value || '').toString().replace(/\\s+/g, ' ').trim();
         const visible = (el) => {
           if (!el) return false;
@@ -710,8 +791,51 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
           const rect = el.getBoundingClientRect();
           return rect.width > 0 || rect.height > 0;
         };
-        const snapshotRoot = () => {
+        const safeClass = (el) => el && el.className ? el.className.toString().slice(0, 160) : '';
+        const hrefFragment = (el) => {
+          const href = el ? (el.getAttribute('href') || '') : '';
+          if (!href || !href.startsWith('#')) return '';
+          return href.slice(1);
+        };
+        const activeTabElement = () => {
           const selectors = [
+            '[aria-selected="true"][aria-controls]',
+            '[aria-selected="true"][href^="#"]',
+            '.active[aria-controls]',
+            '.active[href^="#"]',
+            'li.active [aria-controls]',
+            'li.active a[href^="#"]'
+          ];
+          for (const selector of selectors) {
+            for (const candidate of Array.from(document.querySelectorAll(selector))) {
+              if (visible(candidate)) return candidate;
+            }
+          }
+          return null;
+        };
+        const panelFromId = (targetId) => {
+          if (!targetId) return null;
+          const panel = document.getElementById(targetId);
+          if (panel && visible(panel)) return panel;
+          return null;
+        };
+        const panelFromActive = (active) => {
+          if (!active) return null;
+          return panelFromId(active.getAttribute('aria-controls') || hrefFragment(active));
+        };
+        const snapshotRoot = () => {
+          const directPanel = panelFromId(targetFragment);
+          if (directPanel && directPanel.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+            return { element: directPanel, source: 'direct-target', active: null };
+          }
+          const active = activeTabElement();
+          const activePanel = panelFromActive(active);
+          if (activePanel && activePanel.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+            return { element: activePanel, source: 'fallback-active-target', active };
+          }
+          const selectors = [
+            '[role="tabpanel"].active',
+            '[role="tabpanel"][aria-hidden="false"]',
             '.tab-pane.active',
             '.step-pane.active',
             '.wizard-step.active',
@@ -724,13 +848,14 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
             for (const candidate of Array.from(document.querySelectorAll(selector))) {
               if (!visible(candidate)) continue;
               if (candidate.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
-                return candidate;
+                return { element: candidate, source: selector, active };
               }
             }
           }
-          return document.body;
+          return { element: document.body, source: 'body', active };
         };
-        const root = snapshotRoot();
+        const rootChoice = snapshotRoot();
+        const root = rootChoice.element;
         const labelFor = (control) => {
           if (control.id) {
             const explicit = root.querySelector(`label[for="${CSS.escape(control.id)}"]`) || document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
@@ -776,9 +901,66 @@ def execute_read_only_tab_snapshot(driver) -> dict[str, Any]:
           ).filter((cells) => cells.some(Boolean));
           return { index: tableIndex + 1, rows };
         }).filter((table) => table.rows.length > 0);
-        return { fields, tables, text: '' };
-        """
+        const rowsCount = tables.reduce((total, table) => total + table.rows.length, 0);
+        const cellsCount = tables.reduce((total, table) => total + table.rows.reduce((rowTotal, row) => rowTotal + row.length, 0), 0);
+        return {
+          fields,
+          tables,
+          text: '',
+          meta: {
+            root_source: rootChoice.source,
+            root_tag: root && root.tagName ? root.tagName.toLowerCase() : '',
+            root_id: root && root.id ? root.id : '',
+            root_class: safeClass(root),
+            active_tag: rootChoice.active && rootChoice.active.tagName ? rootChoice.active.tagName.toLowerCase() : '',
+            active_id: rootChoice.active && rootChoice.active.id ? rootChoice.active.id : '',
+            active_class: safeClass(rootChoice.active),
+            active_aria_controls: rootChoice.active ? (rootChoice.active.getAttribute('aria-controls') || '') : '',
+            active_href_fragment: rootChoice.active ? hrefFragment(rootChoice.active) : '',
+            fields_count: fields.length,
+            tables_count: tables.length,
+            rows_count: rowsCount,
+            cells_count: cellsCount
+          }
+        };
+        """,
+        target_fragment,
     ) or {"fields": [], "tables": [], "text": ""}
+
+
+def tab_snapshot_metrics(tab: dict[str, Any], meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    tables = tab.get("tables") or []
+    rows_count = 0
+    cells_count = 0
+    for table in tables:
+        rows = table.get("rows") if isinstance(table, dict) else []
+        if not isinstance(rows, list):
+            continue
+        rows_count += len(rows)
+        cells_count += sum(len(row) for row in rows if isinstance(row, list))
+    meta = meta if isinstance(meta, dict) else {}
+    return {
+        "fields_count": len(tab.get("fields") or {}),
+        "tables_count": len(tables),
+        "rows_count": rows_count,
+        "cells_count": cells_count,
+        "serialized_bytes": len(json_dumps_bytes(tab)),
+        "root_source": meta.get("root_source", ""),
+        "root_tag": meta.get("root_tag", ""),
+        "root_id": meta.get("root_id", ""),
+        "root_class": meta.get("root_class", ""),
+        "active_tag": meta.get("active_tag", ""),
+        "active_id": meta.get("active_id", ""),
+        "active_class": meta.get("active_class", ""),
+        "active_aria_controls": meta.get("active_aria_controls", ""),
+        "active_href_fragment": meta.get("active_href_fragment", ""),
+    }
+
+
+def json_dumps_bytes(value: Any) -> bytes:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
 def extract_label_value_fields(driver) -> dict[str, Any]:
