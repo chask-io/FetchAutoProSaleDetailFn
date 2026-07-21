@@ -6,7 +6,9 @@ function:
     Extrae en modo solo lectura el detalle completo de ventas AutoPro por folio
     para Daniel Achondo. En modo batch procesa folios secuencialmente, aisla
     fallas por folio, sube el resultado completo como JSON de sesion y retorna
-    solo file_uuid, conteos y resumen de fallas.
+    solo file_uuid, conteos y resumen de fallas. Promueve descuentos desde los
+    campos exactos del wizard y bono_descuento/bono_descuento_pct desde la fila
+    exacta Bono Descuento de Resumen Venta.
   timeout: 600
   memory_size: 1024
 

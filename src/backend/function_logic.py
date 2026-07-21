@@ -440,6 +440,7 @@ def unavailable_result(
         "tipo_venta_detalle": None,
         "forma_pago": None,
         "bono_descuento": None,
+        "bono_descuento_pct": None,
         "dcto_recargo_pct": None,
         "dcto_recargo_amount": None,
         "total_vehiculo_cliente": None,

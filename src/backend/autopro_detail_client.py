@@ -1100,6 +1100,7 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
     all_fields = flatten_fields(tabs)
     forma_pago_tab = first_tab_matching(tabs, "forma de pago")
     resumen_tab = first_tab_matching(tabs, "resumen")
+    resumen_bono = resumen_bono_descuento(resumen_tab)
     promoted = {
         "comentario": first_value_by_label(all_fields, ["comentario", "observacion", "observaciones"]),
         "numero_chasis": first_value_by_label(all_fields, ["chasis", "numero chasis", "número chasis", "nro chasis"]),
@@ -1107,7 +1108,9 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
         "uso_vehiculo": first_value_by_label(all_fields, ["uso vehiculo", "uso del vehiculo", "uso"]),
         "tipo_venta_detalle": first_value_by_label(all_fields, ["tipo venta", "tipo de venta", "tipo venta detalle"]),
         "forma_pago": forma_pago_payload(forma_pago_tab),
-        "bono_descuento": first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
+        "bono_descuento": resumen_bono.get("amount")
+        or first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
+        "bono_descuento_pct": resumen_bono.get("pct"),
         "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %", "precio_venta_descuento_pje", "precio venta descuento pje"]),
         "dcto_recargo_amount": first_value_by_label(
             all_fields,
@@ -1162,6 +1165,48 @@ def first_value_by_label(
             if needle in key and values and not any(exclude in key for exclude in exclude_needles):
                 return values[0]
     return None
+
+
+def resumen_bono_descuento(tab: Optional[dict[str, Any]]) -> dict[str, Optional[str]]:
+    result = {"amount": None, "pct": None}
+    if not tab:
+        return result
+    for table in tab.get("tables") or []:
+        rows = table.get("rows") if isinstance(table, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, list) or not row:
+                continue
+            if normalize_key(row[0]) != "bono descuento":
+                continue
+            amount_index = None
+            for index, cell in enumerate(row[1:], start=1):
+                value = normalize_space(str(cell))
+                if "$" in value:
+                    amount_index = index
+                    result["amount"] = value
+                    break
+            if amount_index is None:
+                for index, cell in enumerate(row[1:], start=1):
+                    value = normalize_space(str(cell))
+                    if value:
+                        amount_index = index
+                        result["amount"] = value
+                        break
+            if amount_index is not None:
+                for cell in row[amount_index + 1:]:
+                    value = normalize_space(str(cell))
+                    if "%" in value:
+                        result["pct"] = value
+                        break
+            return result
+    fields = tab.get("fields") if isinstance(tab, dict) else {}
+    if isinstance(fields, dict):
+        value = fields.get("Bono Descuento")
+        if value not in (None, ""):
+            result["amount"] = str(value)
+    return result
 
 
 def forma_pago_payload(tab: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
