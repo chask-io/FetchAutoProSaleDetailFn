@@ -122,42 +122,61 @@ class FunctionBackend:
         started = time.time()
         results: List[Dict[str, Any]] = []
         failures: List[Dict[str, Any]] = []
+        client: AutoProSaleDetailClient | None = None
 
-        for index, request in enumerate(folio_requests):
-            if index:
-                time.sleep(delay_seconds)
-            folio = request["folio"]
-            logger.info("FetchAutoProSaleDetailFn batch folio start index=%s total=%s", index + 1, len(folio_requests))
-            try:
-                if request.get("error"):
-                    result = unavailable_result(folio=folio, branch=branch, mensaje_tecnico=request["error"])
-                else:
-                    result = self._fetch_one_result(
+        try:
+            for index, request in enumerate(folio_requests):
+                if index:
+                    time.sleep(delay_seconds)
+                folio = request["folio"]
+                logger.info(
+                    "FetchAutoProSaleDetailFn batch folio start index=%s total=%s",
+                    index + 1,
+                    len(folio_requests),
+                )
+                try:
+                    if request.get("error"):
+                        result = unavailable_result(folio=folio, branch=branch, mensaje_tecnico=request["error"])
+                    else:
+                        if client is None:
+                            client = self._create_client(
+                                folio=folio,
+                                branch=branch,
+                                verbose=verbose,
+                                username=username,
+                                password=password,
+                                browserbase_api_key=browserbase_api_key,
+                                browserbase_project_id=browserbase_project_id,
+                            )
+                            client.start_session_context()
+                        result = self._fetch_one_result_with_client(
+                            client=client,
+                            folio=folio,
+                            branch=branch,
+                        )
+                except Exception as exc:
+                    logger.warning("AutoPro batch folio isolated exception folio=%s: %s", folio, exc, exc_info=True)
+                    result = unavailable_result(
                         folio=folio,
                         branch=branch,
-                        verbose=verbose,
-                        username=username,
-                        password=password,
-                        browserbase_api_key=browserbase_api_key,
-                        browserbase_project_id=browserbase_project_id,
+                        mensaje_tecnico=_safe_error_message(exc),
+                        diagnostico_grid=getattr(exc, "diagnostics", None),
                     )
-            except Exception as exc:
-                logger.warning("AutoPro batch folio isolated exception folio=%s: %s", folio, exc, exc_info=True)
-                result = unavailable_result(
-                    folio=folio,
-                    branch=branch,
-                    mensaje_tecnico=_safe_error_message(exc),
-                    diagnostico_grid=getattr(exc, "diagnostics", None),
-                )
-            results.append(result)
-            if result.get("status") != "success":
-                failures.append(
-                    {
-                        "folio": result.get("folio"),
-                        "status": result.get("status"),
-                        "mensaje_tecnico": result.get("mensaje_tecnico"),
-                    }
-                )
+                results.append(result)
+                if result.get("status") != "success":
+                    if client is not None:
+                        client.close()
+                        client = None
+                    failures.append(
+                        {
+                            "folio": result.get("folio"),
+                            "status": result.get("status"),
+                            "mensaje_tecnico": result.get("mensaje_tecnico"),
+                        }
+                    )
+        finally:
+            if client is not None:
+                client.close()
 
         success_count = sum(1 for item in results if item.get("status") == "success")
         collection = {
@@ -215,27 +234,17 @@ class FunctionBackend:
         browserbase_project_id: str,
     ) -> Dict[str, Any]:
         try:
-            client = AutoProSaleDetailClient(
-                username=username,
-                password=password,
-                base_url=DEFAULT_BASE_URL,
-                browserbase_api_key=browserbase_api_key,
-                browserbase_project_id=browserbase_project_id,
+            client = self._create_client(
                 folio=folio,
                 branch=branch,
                 verbose=verbose,
+                username=username,
+                password=password,
+                browserbase_api_key=browserbase_api_key,
+                browserbase_project_id=browserbase_project_id,
             )
             detail = client.fetch_detail()
-            return {
-                "status": "success",
-                "tenant_id": TENANT_SLUG,
-                "folio": detail.folio,
-                "folio_venta": detail.folio,
-                "branch": detail.branch,
-                "browserbase_session_id": detail.browserbase_session_id,
-                "detalle_raw": detail.detalle_raw,
-                **detail.promoted,
-            }
+            return detail_result_payload(detail)
         except Exception as exc:
             logger.warning("AutoPro detail unavailable for folio=%s: %s", folio, exc, exc_info=True)
             return unavailable_result(
@@ -244,6 +253,40 @@ class FunctionBackend:
                 mensaje_tecnico=_safe_error_message(exc),
                 diagnostico_grid=getattr(exc, "diagnostics", None),
             )
+
+    @staticmethod
+    def _create_client(
+        *,
+        folio: str,
+        branch: str,
+        verbose: bool,
+        username: str,
+        password: str,
+        browserbase_api_key: str,
+        browserbase_project_id: str,
+    ) -> AutoProSaleDetailClient:
+        return AutoProSaleDetailClient(
+            username=username,
+            password=password,
+            base_url=DEFAULT_BASE_URL,
+            browserbase_api_key=browserbase_api_key,
+            browserbase_project_id=browserbase_project_id,
+            folio=folio,
+            branch=branch,
+            verbose=verbose,
+        )
+
+    @staticmethod
+    def _fetch_one_result_with_client(
+        *,
+        client: AutoProSaleDetailClient,
+        folio: str,
+        branch: str,
+    ) -> Dict[str, Any]:
+        detail = client.fetch_detail_for_folio(folio)
+        payload = detail_result_payload(detail)
+        payload["branch"] = payload.get("branch") or branch
+        return payload
 
     def _resolve_requested_folios(self, tool_args: Dict[str, Any]) -> List[Dict[str, str]]:
         values: List[Any] = []
@@ -459,6 +502,19 @@ def unavailable_result(
     if diagnostico_grid:
         result["diagnostico_grid"] = diagnostico_grid
     return result
+
+
+def detail_result_payload(detail) -> Dict[str, Any]:
+    return {
+        "status": "success",
+        "tenant_id": TENANT_SLUG,
+        "folio": detail.folio,
+        "folio_venta": detail.folio,
+        "branch": detail.branch,
+        "browserbase_session_id": detail.browserbase_session_id,
+        "detalle_raw": detail.detalle_raw,
+        **detail.promoted,
+    }
 
 
 def format_result(result: Dict[str, Any]) -> str:

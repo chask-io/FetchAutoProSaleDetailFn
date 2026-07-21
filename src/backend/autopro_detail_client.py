@@ -127,8 +127,17 @@ class AutoProSaleDetailClient:
         self.max_seconds = _positive_int_env("AUTOPRO_DETAIL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
         self._session_id: Optional[str] = None
         self._diagnostics: dict[str, Any] = {}
+        self._driver = None
+        self._access: Optional[ReadOnlyElementAccess] = None
 
     def fetch_detail(self) -> AutoProSaleDetail:
+        try:
+            self.start_session_context()
+            return self.fetch_detail_for_folio(self.folio)
+        finally:
+            self.close()
+
+    def start_session_context(self) -> None:
         deadline = _OperationDeadline(self.max_seconds)
         session = self._create_browserbase_session()
         deadline.raise_if_expired()
@@ -136,19 +145,42 @@ class AutoProSaleDetailClient:
         self._configure_driver_timeouts(driver)
         access = ReadOnlyElementAccess(driver)
         stop_watchdog = self._start_deadline_watchdog(driver, deadline)
+        initialized = False
         try:
             wait = _DeadlineAwareWait(driver, deadline)
             self._login(driver, access, wait)
             deadline.raise_if_expired()
             self._select_context(driver, access, wait)
             deadline.raise_if_expired()
-            self._open_sales_grid(driver, access, wait)
+            self._driver = driver
+            self._access = access
+            initialized = True
+        finally:
+            stop_watchdog.set()
+            if not initialized:
+                try:
+                    driver.quit()
+                except Exception:
+                    logger.warning("Failed to quit Browserbase driver after initialization error", exc_info=True)
+
+    def fetch_detail_for_folio(self, folio: str) -> AutoProSaleDetail:
+        if self._driver is None or self._access is None:
+            raise AutoProDetailUnavailableError("AutoPro session is not initialized")
+        self.folio = normalize_folio(folio)
+        self._diagnostics = {
+            key: value for key, value in self._diagnostics.items() if key == "selected_context"
+        }
+        deadline = _OperationDeadline(self.max_seconds)
+        wait = _DeadlineAwareWait(self._driver, deadline)
+        stop_watchdog = self._start_deadline_watchdog(self._driver, deadline)
+        try:
+            self._open_sales_grid(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            self._filter_by_folio(driver, access, wait)
+            self._filter_by_folio(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            self._open_edit_wizard(driver, access, wait)
+            self._open_edit_wizard(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            detalle_raw = self._extract_wizard(driver, access, wait, deadline)
+            detalle_raw = self._extract_wizard(self._driver, self._access, wait, deadline)
             promoted = promote_detail(detalle_raw)
             return AutoProSaleDetail(
                 folio=self.folio,
@@ -159,10 +191,17 @@ class AutoProSaleDetailClient:
             )
         finally:
             stop_watchdog.set()
-            try:
-                driver.quit()
-            except Exception:
-                logger.warning("Failed to quit Browserbase driver", exc_info=True)
+
+    def close(self) -> None:
+        driver = self._driver
+        self._driver = None
+        self._access = None
+        if driver is None:
+            return
+        try:
+            driver.quit()
+        except Exception:
+            logger.warning("Failed to quit Browserbase driver", exc_info=True)
 
     def _create_browserbase_session(self):
         from browserbase import Browserbase

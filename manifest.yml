@@ -9,7 +9,7 @@ function:
     solo file_uuid, conteos y resumen de fallas. Promueve descuentos desde los
     campos exactos del wizard y bono_descuento/bono_descuento_pct desde la fila
     exacta Bono Descuento de Resumen Venta.
-  timeout: 600
+  timeout: 900
   memory_size: 1024
 
   layers:

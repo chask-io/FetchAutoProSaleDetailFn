@@ -246,12 +246,22 @@ def test_batch_processes_mixed_success_failure_uploads_collection_and_returns_sm
     class FakeClient:
         def __init__(self, **kwargs):
             self.folio = kwargs["folio"]
-            calls.append(kwargs)
+
+        def start_session_context(self):
+            return None
+
+        def fetch_detail_for_folio(self, folio):
+            self.folio = folio
+            calls.append({"folio": folio})
+            return self.fetch_detail()
 
         def fetch_detail(self):
             if self.folio == "9999":
                 raise RuntimeError("folio no encontrado")
             return fake_detail(self.folio)
+
+        def close(self):
+            return None
 
     class Files:
         def call(self, name, *args, **kwargs):
@@ -294,35 +304,29 @@ def test_batch_processes_mixed_success_failure_uploads_collection_and_returns_sm
     assert uploaded["payload"]["diagnostico_respuesta"]["serialized_bytes"] > contract["diagnostico_respuesta"]["serialized_bytes"]
 
 
-def test_batch_loop_isolates_arbitrary_folio_exception_and_runs_next(monkeypatch):
-    calls = []
+def test_batch_loop_isolates_arbitrary_folio_exception_recreates_session_and_runs_next(monkeypatch):
+    events = []
     uploaded = {}
 
-    def fake_fetch_one_result(self, *, folio, **kwargs):
-        calls.append(folio)
-        if folio == "7998":
-            raise RuntimeError("synthetic wrapper serialization bug")
-        return {
-            "status": "success",
-            "tenant_id": function_logic.TENANT_SLUG,
-            "folio": folio,
-            "folio_venta": folio,
-            "branch": kwargs["branch"],
-            "browserbase_session_id": f"bb-{folio}",
-            "detalle_raw": {"tabs": {"Resumen Venta": {"fields": {}, "tables": [], "text": ""}}},
-            "numero_chasis": f"CH-{folio}",
-            "vin_or_unidad_id": f"CH-{folio}",
-            "comentario": None,
-            "uso_vehiculo": None,
-            "tipo_venta_detalle": None,
-            "forma_pago": None,
-            "bono_descuento": None,
-            "bono_descuento_pct": None,
-            "dcto_recargo_pct": None,
-            "dcto_recargo_amount": None,
-            "total_vehiculo_cliente": None,
-            "fecha_entrega": None,
-        }
+    class FakeClient:
+        instances = 0
+
+        def __init__(self, **kwargs):
+            type(self).instances += 1
+            self.instance_id = type(self).instances
+            events.append(("init", self.instance_id, kwargs["folio"]))
+
+        def start_session_context(self):
+            events.append(("start", self.instance_id))
+
+        def fetch_detail_for_folio(self, folio):
+            events.append(("fetch", self.instance_id, folio))
+            if folio == "7998":
+                raise RuntimeError("synthetic wrapper serialization bug")
+            return fake_detail(folio)
+
+        def close(self):
+            events.append(("close", self.instance_id))
 
     class Files:
         def call(self, name, *args, **kwargs):
@@ -330,7 +334,7 @@ def test_batch_loop_isolates_arbitrary_folio_exception_and_runs_next(monkeypatch
             uploaded["payload"] = json.loads(kwargs["file"].getvalue().decode("utf-8"))
             return {"file_uuid": "isolated-output-uuid", "status_code": 201}
 
-    monkeypatch.setattr(function_logic.FunctionBackend, "_fetch_one_result", fake_fetch_one_result)
+    monkeypatch.setattr(function_logic, "AutoProSaleDetailClient", FakeClient)
     monkeypatch.setattr(function_logic, "files_api_manager", Files())
     monkeypatch.setattr(function_logic.time, "sleep", lambda seconds: None)
 
@@ -339,7 +343,16 @@ def test_batch_loop_isolates_arbitrary_folio_exception_and_runs_next(monkeypatch
     ).process_request()
     contract = metadata_from_result(result)
 
-    assert calls == ["7998", "7999"]
+    assert events == [
+        ("init", 1, "7998"),
+        ("start", 1),
+        ("fetch", 1, "7998"),
+        ("close", 1),
+        ("init", 2, "7999"),
+        ("start", 2),
+        ("fetch", 2, "7999"),
+        ("close", 2),
+    ]
     assert contract["status"] == "partial_success"
     assert contract["counts"] == {"requested": 2, "success": 1, "failed": 1}
     assert contract["failures"] == [
@@ -356,6 +369,77 @@ def test_batch_loop_isolates_arbitrary_folio_exception_and_runs_next(monkeypatch
     assert uploaded["payload"]["results"][1]["folio"] == "7999"
 
 
+def test_batch_successes_reuse_one_session_login_context(monkeypatch):
+    events = []
+    uploaded = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            events.append(("init", kwargs["folio"]))
+
+        def start_session_context(self):
+            events.append(("start",))
+
+        def fetch_detail_for_folio(self, folio):
+            events.append(("fetch", folio))
+            return fake_detail(folio)
+
+        def close(self):
+            events.append(("close",))
+
+    class Files:
+        def call(self, name, *args, **kwargs):
+            assert name == "upload_file"
+            uploaded["payload"] = json.loads(kwargs["file"].getvalue().decode("utf-8"))
+            return {"file_uuid": "reuse-output-uuid", "status_code": 201}
+
+    monkeypatch.setattr(function_logic, "AutoProSaleDetailClient", FakeClient)
+    monkeypatch.setattr(function_logic, "files_api_manager", Files())
+    monkeypatch.setattr(function_logic.time, "sleep", lambda seconds: None)
+
+    result = function_logic.FunctionBackend(
+        make_event({"folios": ["7999", "8000", "8004"], "branch": "698", "delay_seconds": 0})
+    ).process_request()
+    contract = metadata_from_result(result)
+
+    assert events == [
+        ("init", "7999"),
+        ("start",),
+        ("fetch", "7999"),
+        ("fetch", "8000"),
+        ("fetch", "8004"),
+        ("close",),
+    ]
+    assert contract["status"] == "success"
+    assert contract["counts"] == {"requested": 3, "success": 3, "failed": 0}
+    assert [item["folio"] for item in uploaded["payload"]["results"]] == ["7999", "8000", "8004"]
+
+
+def test_batch_does_not_swallow_base_exception(monkeypatch):
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def start_session_context(self):
+            return None
+
+        def fetch_detail_for_folio(self, folio):
+            raise KeyboardInterrupt("process control")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(function_logic, "AutoProSaleDetailClient", FakeClient)
+    monkeypatch.setattr(function_logic.time, "sleep", lambda seconds: None)
+
+    try:
+        function_logic.FunctionBackend(make_event({"folios": ["7999"], "branch": "698"})).process_request()
+    except KeyboardInterrupt as exc:
+        assert str(exc) == "process control"
+    else:
+        raise AssertionError("KeyboardInterrupt was swallowed")
+
+
 def test_batch_loads_folios_from_generic_input_file_uuid(monkeypatch):
     requested_urls = []
     uploaded = {}
@@ -364,8 +448,18 @@ def test_batch_loads_folios_from_generic_input_file_uuid(monkeypatch):
         def __init__(self, **kwargs):
             self.folio = kwargs["folio"]
 
+        def start_session_context(self):
+            return None
+
+        def fetch_detail_for_folio(self, folio):
+            self.folio = folio
+            return self.fetch_detail()
+
         def fetch_detail(self):
             return fake_detail(self.folio)
+
+        def close(self):
+            return None
 
     class Files:
         def call(self, name, *args, **kwargs):
@@ -406,10 +500,20 @@ def test_large_batch_payload_is_uploaded_not_relayed_inline(monkeypatch):
         def __init__(self, **kwargs):
             self.folio = kwargs["folio"]
 
+        def start_session_context(self):
+            return None
+
+        def fetch_detail_for_folio(self, folio):
+            self.folio = folio
+            return self.fetch_detail()
+
         def fetch_detail(self):
             detail = fake_detail(self.folio)
             detail.detalle_raw["tabs"]["Resumen Venta"]["tables"][0]["rows"] = large_rows
             return detail
+
+        def close(self):
+            return None
 
     class Files:
         def call(self, name, *args, **kwargs):
@@ -445,8 +549,17 @@ def test_batch_isolates_invalid_folio_values(monkeypatch):
         def __init__(self, **kwargs):
             calls.append(kwargs["folio"])
 
+        def start_session_context(self):
+            return None
+
+        def fetch_detail_for_folio(self, folio):
+            return fake_detail(folio)
+
         def fetch_detail(self):
             return fake_detail(calls[-1])
+
+        def close(self):
+            return None
 
     class Files:
         def call(self, name, *args, **kwargs):
