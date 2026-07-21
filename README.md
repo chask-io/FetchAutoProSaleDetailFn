@@ -27,6 +27,21 @@ This is a Chask organization-specific Lambda function deployed from GitHub.
 - **branch** (string): Codigo de sucursal AutoPro. Default 698.
 - **verbose** (boolean): Enable verbose logging (default: false)
 
+## Output Contract
+
+Successful detail rows include `detalle_raw` plus promoted fields for
+`comentario`, `forma_pago`, `bono_descuento`, `bono_descuento_pct`,
+`dcto_recargo_pct`, `dcto_recargo_amount`, `total_vehiculo_cliente`, and
+`fecha_entrega`.
+
+`dcto_recargo_pct` and `dcto_recargo_amount` are promoted from the exact AutoPro
+wizard fields `Precio_Venta_Descuento_Pje` and `Precio_Venta_Descuento`. Bonus
+promotion prefers the exact `Resumen Venta` table row labeled
+`Bono Descuento`: the vehicle amount cell is `bono_descuento` and the adjacent
+percent cell is `bono_descuento_pct`. This Resumen row is authoritative and is
+not summed or concatenated across duplicate table snapshots. Raw bonus-like
+fields such as `Bono_DR_LP` are fallback-only when Resumen is absent.
+
 ## Read-Only Guard
 
 The browser client never searches for save/finalize controls. All Selenium

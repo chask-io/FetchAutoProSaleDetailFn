@@ -7,7 +7,9 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +21,22 @@ DEFAULT_MAX_SECONDS = 540
 DEFAULT_WAIT_SECONDS = 20
 PAGE_LOAD_TIMEOUT_SECONDS = 30
 SCRIPT_TIMEOUT_SECONDS = 30
+GRID_SEARCH_START_DATE = "01-01-2010"
+MIN_SECONDS_FOR_NEXT_TAB = 12
 
 FORBIDDEN_UI_TERMS = ("guardar", "finalizar")
 SAFE_NEXT_LABEL = "Siguiente"
 CANCEL_LABEL = "Cancelar"
+WIZARD_STEP_NAMES = (
+    "Identificación Cliente",
+    "Datos Vehículo",
+    "Retoma",
+    "Trámites",
+    "Accesorios",
+    "Datos Compra",
+    "Forma de Pago",
+    "Resumen Venta",
+)
 
 
 class AutoProReadOnlyViolation(RuntimeError):
@@ -31,6 +45,10 @@ class AutoProReadOnlyViolation(RuntimeError):
 
 class AutoProDetailUnavailableError(RuntimeError):
     """Raised for portal/network/detail extraction failures."""
+
+    def __init__(self, message: str, *, diagnostics: Optional[dict[str, Any]] = None):
+        super().__init__(message)
+        self.diagnostics = diagnostics or {}
 
 
 @dataclass
@@ -108,8 +126,18 @@ class AutoProSaleDetailClient:
         self.verbose = verbose
         self.max_seconds = _positive_int_env("AUTOPRO_DETAIL_MAX_SECONDS", DEFAULT_MAX_SECONDS)
         self._session_id: Optional[str] = None
+        self._diagnostics: dict[str, Any] = {}
+        self._driver = None
+        self._access: Optional[ReadOnlyElementAccess] = None
 
     def fetch_detail(self) -> AutoProSaleDetail:
+        try:
+            self.start_session_context()
+            return self.fetch_detail_for_folio(self.folio)
+        finally:
+            self.close()
+
+    def start_session_context(self) -> None:
         deadline = _OperationDeadline(self.max_seconds)
         session = self._create_browserbase_session()
         deadline.raise_if_expired()
@@ -117,19 +145,42 @@ class AutoProSaleDetailClient:
         self._configure_driver_timeouts(driver)
         access = ReadOnlyElementAccess(driver)
         stop_watchdog = self._start_deadline_watchdog(driver, deadline)
+        initialized = False
         try:
             wait = _DeadlineAwareWait(driver, deadline)
             self._login(driver, access, wait)
             deadline.raise_if_expired()
             self._select_context(driver, access, wait)
             deadline.raise_if_expired()
-            self._open_sales_grid(driver, access, wait)
+            self._driver = driver
+            self._access = access
+            initialized = True
+        finally:
+            stop_watchdog.set()
+            if not initialized:
+                try:
+                    driver.quit()
+                except Exception:
+                    logger.warning("Failed to quit Browserbase driver after initialization error", exc_info=True)
+
+    def fetch_detail_for_folio(self, folio: str) -> AutoProSaleDetail:
+        if self._driver is None or self._access is None:
+            raise AutoProDetailUnavailableError("AutoPro session is not initialized")
+        self.folio = normalize_folio(folio)
+        self._diagnostics = {
+            key: value for key, value in self._diagnostics.items() if key == "selected_context"
+        }
+        deadline = _OperationDeadline(self.max_seconds)
+        wait = _DeadlineAwareWait(self._driver, deadline)
+        stop_watchdog = self._start_deadline_watchdog(self._driver, deadline)
+        try:
+            self._open_sales_grid(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            self._filter_by_folio(driver, access, wait)
+            self._filter_by_folio(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            self._open_edit_wizard(driver, access, wait)
+            self._open_edit_wizard(self._driver, self._access, wait)
             deadline.raise_if_expired()
-            detalle_raw = self._extract_wizard(driver, access, wait, deadline)
+            detalle_raw = self._extract_wizard(self._driver, self._access, wait, deadline)
             promoted = promote_detail(detalle_raw)
             return AutoProSaleDetail(
                 folio=self.folio,
@@ -140,10 +191,17 @@ class AutoProSaleDetailClient:
             )
         finally:
             stop_watchdog.set()
-            try:
-                driver.quit()
-            except Exception:
-                logger.warning("Failed to quit Browserbase driver", exc_info=True)
+
+    def close(self) -> None:
+        driver = self._driver
+        self._driver = None
+        self._access = None
+        if driver is None:
+            return
+        try:
+            driver.quit()
+        except Exception:
+            logger.warning("Failed to quit Browserbase driver", exc_info=True)
 
     def _create_browserbase_session(self):
         from browserbase import Browserbase
@@ -225,6 +283,7 @@ class AutoProSaleDetailClient:
         Select(access.find_element(By.ID, "branch")).select_by_value(self.branch)
         self._wait_for_select_option(access, "module", MODULE_ID)
         Select(access.find_element(By.ID, "module")).select_by_value(MODULE_ID)
+        self._diagnostics["selected_context"] = selected_context_state(driver)
         access.click(wait.until(EC.element_to_be_clickable((By.ID, "LoginOk"))), label="LoginOk")
         driver.switch_to.default_content()
         time.sleep(8)
@@ -241,42 +300,73 @@ class AutoProSaleDetailClient:
                 (By.XPATH, "//a[contains(@href, 'showdms_venta_vehiculotable')]")
             )
         )
-        access.js_click(link, label="menu venta vehiculos")
+        self._open_sales_grid_link(driver, access, link)
         time.sleep(6)
         self._switch_to_grid(driver)
         self._log("Opened Consulta Venta Vehiculo via menu")
 
-    def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.common.keys import Keys
+    def _open_sales_grid_link(self, driver, access: ReadOnlyElementAccess, link) -> None:
+        href = link.get_attribute("href") or ""
+        try:
+            access.js_click(link, label="menu venta vehiculos")
+            return
+        except KeyError as exc:
+            if str(exc).strip("'\"") != "value":
+                raise
+            logger.warning(
+                "AutoPro menu JS click returned malformed Selenium response for folio=%s; checking grid before one retry",
+                self.folio,
+            )
+        except Exception:
+            raise
 
+        if self._grid_available_after_malformed_click(driver):
+            return
+        try:
+            access.js_click(link, label="menu venta vehiculos")
+            return
+        except KeyError as exc:
+            if str(exc).strip("'\"") != "value":
+                raise
+            logger.warning(
+                "AutoPro menu JS click retry also returned malformed Selenium response for folio=%s; checking grid then using href fallback",
+                self.folio,
+            )
+        except Exception:
+            raise
+
+        if self._grid_available_after_malformed_click(driver):
+            return
+        safe_href = safe_autopro_navigation_href(href, self.base_url)
+        if not safe_href:
+            raise AutoProDetailUnavailableError(
+                "AutoPro venta vehiculo menu click returned malformed Selenium response and link href was empty"
+            )
+        driver.switch_to.default_content()
+        driver.get(safe_href)
+
+    def _grid_available_after_malformed_click(self, driver) -> bool:
+        try:
+            self._switch_to_grid(driver, timeout=3.0)
+            return True
+        except AutoProDetailUnavailableError:
+            return False
+
+    def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
         self._switch_to_grid(driver)
-        folio_input = self._first_present(
-            access,
-            By.CSS_SELECTOR,
-            [
-                "input[id*='Folio'][id*='Filter']",
-                "input[name*='Folio'][name*='Filter']",
-                "input[id*='Numero'][id*='Filter']",
-                "input[name*='Numero'][name*='Filter']",
-            ],
-        )
-        folio_input.clear()
-        folio_input.send_keys(self.folio)
-        search = self._first_present(
-            access,
-            By.CSS_SELECTOR,
-            [
-                "input[id$='FilterButton__Button']",
-                "button[id$='FilterButton__Button']",
-                "input[type='submit'][value*='Buscar']",
-                "button[type='submit']",
-            ],
-        )
+        diagnostics = dict(self._diagnostics)
+        diagnostics["filters_before"] = visible_filter_control_metadata(driver)
+        diagnostics["applied_filters"] = apply_grid_filters_for_folio(access, self.folio)
+        diagnostics["filters_after"] = visible_filter_control_metadata(driver)
+        search = find_grid_search_button(access)
         access.click(search, label="Buscar")
         time.sleep(3)
+        diagnostics["post_search"] = grid_result_markers(driver, self.folio)
         if not page_contains_text(driver, self.folio):
-            raise AutoProDetailUnavailableError(f"Folio {self.folio} not found in AutoPro grid after filtering")
+            raise AutoProDetailUnavailableError(
+                f"Folio {self.folio} not found in AutoPro grid after filtering",
+                diagnostics=diagnostics,
+            )
         self._log("Folio filter applied: %s", self.folio)
 
     def _open_edit_wizard(self, driver, access: ReadOnlyElementAccess, wait) -> None:
@@ -308,17 +398,61 @@ class AutoProSaleDetailClient:
         tabs: dict[str, Any] = {}
         visited = set()
         safety_steps = 0
+        extraction_notes = []
 
         while safety_steps < 20:
             deadline.raise_if_expired()
             self._switch_to_wizard(driver)
             assert_no_blocking_prompt(driver)
-            tab_name = current_tab_name(driver) or f"tab_{safety_steps + 1}"
+            tab_name = wizard_step_name(safety_steps, current_tab_name(driver))
             normalized = normalize_key(tab_name)
             if normalized not in visited:
-                tabs[tab_name] = extract_current_tab(driver)
+                started = time.monotonic()
+                active_tab = active_tab_metadata(driver)
+                tab_snapshot = extract_current_tab(
+                    driver,
+                    active_tab=active_tab,
+                    include_tables=should_serialize_tables_for_tab(tab_name),
+                )
+                snapshot_meta = tab_snapshot.pop("_snapshot_meta", {})
+                tabs[tab_name] = tab_snapshot
+                snapshot_metrics = tab_snapshot_metrics(tabs[tab_name], snapshot_meta)
+                logger.info(
+                    "AutoPro tab snapshot tab=%s active_tag=%s active_id=%s active_class=%s active_aria_controls=%s active_href_fragment=%s root_tag=%s root_id=%s root_class=%s root_source=%s fields=%s tables=%s rows=%s cells=%s bytes=%s elapsed_ms=%s",
+                    tab_name,
+                    snapshot_metrics.get("active_tag", ""),
+                    snapshot_metrics.get("active_id", ""),
+                    snapshot_metrics.get("active_class", ""),
+                    snapshot_metrics.get("active_aria_controls", ""),
+                    snapshot_metrics.get("active_href_fragment", ""),
+                    snapshot_metrics.get("root_tag", ""),
+                    snapshot_metrics.get("root_id", ""),
+                    snapshot_metrics.get("root_class", ""),
+                    snapshot_metrics.get("root_source", ""),
+                    snapshot_metrics["fields_count"],
+                    snapshot_metrics["tables_count"],
+                    snapshot_metrics["rows_count"],
+                    snapshot_metrics["cells_count"],
+                    snapshot_metrics["serialized_bytes"],
+                    round((time.monotonic() - started) * 1000),
+                )
+                extraction_notes.append(
+                    {
+                        "tab": tab_name,
+                        **snapshot_metrics,
+                        "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    }
+                )
                 visited.add(normalized)
 
+            if deadline.remaining_seconds() < MIN_SECONDS_FOR_NEXT_TAB:
+                extraction_notes.append(
+                    {
+                        "status": "stopped_before_next_tab_due_to_deadline",
+                        "remaining_seconds": round(deadline.remaining_seconds(), 2),
+                    }
+                )
+                break
             next_button = find_safe_next_button(driver)
             if next_button is None:
                 break
@@ -330,6 +464,7 @@ class AutoProSaleDetailClient:
             "folio": self.folio,
             "tabs": tabs,
             "tab_order": list(tabs.keys()),
+            "extraction_notes": extraction_notes,
         }
 
     def _switch_to_grid(self, driver, timeout: float = 25.0) -> None:
@@ -426,6 +561,25 @@ def assert_read_only_selector(value: str) -> None:
             raise AutoProReadOnlyViolation(f"Refusing unsafe AutoPro selector/action: {redact_selector(value)}")
 
 
+def safe_autopro_navigation_href(href: str, base_url: str) -> str:
+    raw = (href or "").strip()
+    if not raw:
+        return ""
+    assert_read_only_selector(raw)
+    normalized = normalize_text(raw)
+    for term in ("javascript:", "data:", "save", "finalize", "action"):
+        if term in normalized:
+            raise AutoProReadOnlyViolation(f"Refusing unsafe AutoPro navigation target: {redact_selector(raw)}")
+    absolute = urljoin(base_url or DEFAULT_BASE_URL, raw)
+    parsed = urlparse(absolute)
+    base = urlparse(base_url or DEFAULT_BASE_URL)
+    if parsed.scheme not in {"http", "https"}:
+        raise AutoProReadOnlyViolation(f"Refusing non-http AutoPro navigation target: {redact_selector(raw)}")
+    if parsed.netloc != base.netloc:
+        raise AutoProReadOnlyViolation(f"Refusing cross-origin AutoPro navigation target: {redact_selector(raw)}")
+    return absolute
+
+
 def assert_no_blocking_prompt(driver) -> None:
     from selenium.webdriver.common.by import By
 
@@ -461,6 +615,194 @@ def find_safe_next_button(driver):
     return visible[0] if visible else None
 
 
+def find_grid_search_button(access: ReadOnlyElementAccess):
+    from selenium.webdriver.common.by import By
+
+    exact_id = "ctl00_PageContent_Dms_Venta_VehiculoFilterButton__Button"
+    try:
+        return access.find_element(By.ID, exact_id)
+    except Exception:
+        return AutoProSaleDetailClient._first_present(
+            access,
+            By.CSS_SELECTOR,
+            [
+                "input[id$='FilterButton__Button']",
+                "button[id$='FilterButton__Button']",
+                "input[type='submit'][value*='Buscar']",
+                "button[type='submit']",
+            ],
+        )
+
+
+def apply_grid_filters_for_folio(access: ReadOnlyElementAccess, folio: str) -> dict[str, Any]:
+    from selenium.webdriver.common.by import By
+
+    applied: dict[str, Any] = {"date_filters": [], "folio_filter": None}
+    date_to = date.today().strftime("%d-%m-%Y")
+    for selector, value in [
+        ("ctl00_PageContent_FechaFromFilter", GRID_SEARCH_START_DATE),
+        ("ctl00_PageContent_FechaToFilter", date_to),
+    ]:
+        elements = access.find_elements(By.ID, selector)
+        if elements:
+            elements[0].clear()
+            elements[0].send_keys(value)
+            applied["date_filters"].append({"id": selector, "value_set": value})
+
+    folio_filters = []
+    for selector in ["ctl00_PageContent_FolioFromFilter", "ctl00_PageContent_FolioToFilter"]:
+        elements = access.find_elements(By.ID, selector)
+        if elements:
+            elements[0].clear()
+            elements[0].send_keys(folio)
+            folio_filters.append({"target": element_metadata(elements[0], include_value=True), "value_set": folio})
+    if folio_filters:
+        applied["folio_filters"] = folio_filters
+        applied.pop("folio_filter", None)
+        return applied
+
+    folio_input = AutoProSaleDetailClient._first_present(
+        access,
+        By.CSS_SELECTOR,
+        [
+            "input[id*='Folio'][id*='Filter']",
+            "input[name*='Folio'][name*='Filter']",
+            "input[id*='Numero'][id*='Filter']",
+            "input[name*='Numero'][name*='Filter']",
+        ],
+    )
+    folio_input.clear()
+    folio_input.send_keys(folio)
+    applied["folio_filter"] = {
+        "target": element_metadata(folio_input, include_value=True),
+        "value_set": folio,
+    }
+    return applied
+
+
+def selected_context_state(driver) -> dict[str, Any]:
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import Select
+
+    state: dict[str, Any] = {}
+    for select_id in ["business", "branch", "module"]:
+        elements = driver.find_elements(By.ID, select_id)
+        if not elements:
+            state[select_id] = {"present": False}
+            continue
+        element = elements[0]
+        selected_value = element.get_attribute("value") or ""
+        selected_text = ""
+        try:
+            selected_text = normalize_space(Select(element).first_selected_option.text)
+        except Exception:
+            selected_text = ""
+        state[select_id] = {
+            "present": True,
+            "value": selected_value,
+            "selected_text": selected_text,
+        }
+    return state
+
+
+def visible_filter_control_metadata(driver) -> list[dict[str, Any]]:
+    from selenium.webdriver.common.by import By
+
+    controls = []
+    for element in driver.find_elements(By.CSS_SELECTOR, "input[id*='Filter'], input[name*='Filter'], select[id*='Filter'], select[name*='Filter'], textarea[id*='Filter'], textarea[name*='Filter']"):
+        try:
+            if element.is_displayed():
+                metadata = element_metadata(element, include_value=True)
+                if metadata:
+                    controls.append(metadata)
+        except Exception:
+            continue
+    return controls[:80]
+
+
+def element_metadata(element, *, include_value: bool) -> dict[str, Any]:
+    tag = (element.tag_name or "").lower()
+    control_type = (element.get_attribute("type") or "").lower()
+    if control_type == "password":
+        return {}
+    metadata = {
+        "tag": tag,
+        "id": element.get_attribute("id") or "",
+        "name": element.get_attribute("name") or "",
+        "type": control_type,
+        "placeholder": element.get_attribute("placeholder") or "",
+        "title": element.get_attribute("title") or "",
+        "aria_label": element.get_attribute("aria-label") or "",
+    }
+    if include_value:
+        metadata["value"] = safe_control_value(element, metadata)
+    return metadata
+
+
+def safe_control_value(element, metadata: dict[str, Any]) -> str:
+    haystack = normalize_key(
+        " ".join(
+            [
+                metadata.get("id", ""),
+                metadata.get("name", ""),
+                metadata.get("placeholder", ""),
+                metadata.get("title", ""),
+                metadata.get("aria_label", ""),
+            ]
+        )
+    )
+    if any(term in haystack for term in ["cliente", "rut", "nombre", "apellido", "email", "correo", "telefono"]):
+        return "[redacted-if-present]" if element.get_attribute("value") else ""
+    return element.get_attribute("value") or ""
+
+
+def grid_result_markers(driver, folio: str) -> dict[str, Any]:
+    from selenium.webdriver.common.by import By
+
+    markers: dict[str, Any] = {
+        "folio_visible": page_contains_text(driver, folio),
+        "empty_state": empty_grid_marker(driver),
+        "safe_rows": [],
+    }
+    rows = driver.find_elements(By.XPATH, "//table//tr")
+    for index, row in enumerate(rows[:50], start=1):
+        cells = [normalize_space(cell.text) for cell in row.find_elements(By.XPATH, "./th|./td")]
+        if not any(cells):
+            continue
+        safe_cells = safe_row_identifiers(cells, folio)
+        if safe_cells:
+            markers["safe_rows"].append({"row_index": index, "identifiers": safe_cells})
+    return markers
+
+
+def safe_row_identifiers(cells: list[str], folio: str) -> list[str]:
+    safe = []
+    for cell in cells:
+        if not cell:
+            continue
+        if folio in cell:
+            safe.append(cell[:80])
+            continue
+        normalized = normalize_text(cell)
+        if normalized in {"editar", "ver", "seleccionar", "modificar"}:
+            safe.append(cell[:40])
+    return safe[:6]
+
+
+def empty_grid_marker(driver) -> Optional[str]:
+    text = normalize_text(visible_body_text(driver))
+    for marker in [
+        "no se encontraron",
+        "sin registros",
+        "no existen registros",
+        "no hay registros",
+        "no records",
+    ]:
+        if marker in text:
+            return marker
+    return None
+
+
 def wizard_ready(driver) -> bool:
     from selenium.webdriver.common.by import By
 
@@ -484,12 +826,287 @@ def current_tab_name(driver) -> Optional[str]:
     return None
 
 
-def extract_current_tab(driver) -> dict[str, Any]:
-    return {
-        "fields": extract_label_value_fields(driver),
-        "tables": extract_tables(driver),
-        "text": visible_body_text(driver),
+def wizard_step_name(step_index: int, detected_name: Optional[str] = None) -> str:
+    if 0 <= step_index < len(WIZARD_STEP_NAMES):
+        return WIZARD_STEP_NAMES[step_index]
+    return detected_name or f"tab_{step_index + 1}"
+
+
+def should_serialize_tables_for_tab(tab_name: str) -> bool:
+    return "resumen" in normalize_key(tab_name)
+
+
+def extract_current_tab(
+    driver,
+    *,
+    active_tab: Optional[dict[str, Any]] = None,
+    include_tables: bool = True,
+) -> dict[str, Any]:
+    active_tab = active_tab or {}
+    target_fragment = active_tab.get("aria_controls") or active_tab.get("href_fragment") or ""
+    snapshot = execute_read_only_tab_snapshot(driver, target_fragment=target_fragment, include_tables=include_tables)
+    snapshot_meta = snapshot.get("meta", {})
+    if not isinstance(snapshot_meta, dict):
+        snapshot_meta = {}
+    snapshot_meta = {
+        **snapshot_meta,
+        "active_tag": active_tab.get("tag", snapshot_meta.get("active_tag", "")),
+        "active_id": active_tab.get("id", snapshot_meta.get("active_id", "")),
+        "active_class": active_tab.get("class", snapshot_meta.get("active_class", "")),
+        "active_aria_controls": active_tab.get("aria_controls", snapshot_meta.get("active_aria_controls", "")),
+        "active_href_fragment": active_tab.get("href_fragment", snapshot_meta.get("active_href_fragment", "")),
+        "active_source": active_tab.get("source", snapshot_meta.get("active_source", "")),
     }
+    fields: dict[str, Any] = {}
+    for item in snapshot.get("fields", []):
+        label = normalize_space(item.get("label", ""))
+        if not label:
+            continue
+        value = item.get("value", "")
+        add_multivalue(fields, label, "" if value is None else str(value))
+    return {
+        "fields": fields,
+        "tables": snapshot.get("tables", []),
+        "text": normalize_space(snapshot.get("text", "")),
+        "_snapshot_meta": snapshot_meta,
+    }
+
+
+def active_tab_metadata(driver) -> dict[str, Any]:
+    return driver.execute_script(
+        """
+        const visible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 || rect.height > 0;
+        };
+        const safeClass = (el) => el && el.className ? el.className.toString().slice(0, 160) : '';
+        const hrefFragment = (el) => {
+          const href = el ? (el.getAttribute('href') || '') : '';
+          if (!href || !href.startsWith('#')) return '';
+          return href.slice(1);
+        };
+        const selectors = [
+          '[aria-selected="true"][aria-controls]',
+          '[aria-selected="true"][href^="#"]',
+          '.active[aria-controls]',
+          '.active[href^="#"]',
+          'li.active [aria-controls]',
+          'li.active a[href^="#"]'
+        ];
+        for (const selector of selectors) {
+          for (const candidate of Array.from(document.querySelectorAll(selector))) {
+            if (visible(candidate)) {
+              return {
+                tag: candidate.tagName ? candidate.tagName.toLowerCase() : '',
+                id: candidate.id || '',
+                class: safeClass(candidate),
+                aria_controls: candidate.getAttribute('aria-controls') || '',
+                href_fragment: hrefFragment(candidate),
+                source: selector
+              };
+            }
+          }
+        }
+        return {};
+        """
+    ) or {}
+
+
+def execute_read_only_tab_snapshot(
+    driver,
+    *,
+    target_fragment: str = "",
+    include_tables: bool = True,
+) -> dict[str, Any]:
+    return driver.execute_script(
+        """
+        const targetFragment = arguments[0] || '';
+        const includeTables = Boolean(arguments[1]);
+        const norm = (value) => (value || '').toString().replace(/\\s+/g, ' ').trim();
+        const visible = (el) => {
+          if (!el) return false;
+          const style = window.getComputedStyle(el);
+          if (style.display === 'none' || style.visibility === 'hidden') return false;
+          const rect = el.getBoundingClientRect();
+          return rect.width > 0 || rect.height > 0;
+        };
+        const safeClass = (el) => el && el.className ? el.className.toString().slice(0, 160) : '';
+        const hrefFragment = (el) => {
+          const href = el ? (el.getAttribute('href') || '') : '';
+          if (!href || !href.startsWith('#')) return '';
+          return href.slice(1);
+        };
+        const activeTabElement = () => {
+          const selectors = [
+            '[aria-selected="true"][aria-controls]',
+            '[aria-selected="true"][href^="#"]',
+            '.active[aria-controls]',
+            '.active[href^="#"]',
+            'li.active [aria-controls]',
+            'li.active a[href^="#"]'
+          ];
+          for (const selector of selectors) {
+            for (const candidate of Array.from(document.querySelectorAll(selector))) {
+              if (visible(candidate)) return candidate;
+            }
+          }
+          return null;
+        };
+        const panelFromId = (targetId) => {
+          if (!targetId) return null;
+          const panel = document.getElementById(targetId);
+          if (panel && visible(panel)) return panel;
+          return null;
+        };
+        const panelFromActive = (active) => {
+          if (!active) return null;
+          return panelFromId(active.getAttribute('aria-controls') || hrefFragment(active));
+        };
+        const snapshotRoot = () => {
+          const directPanel = panelFromId(targetFragment);
+          if (directPanel && directPanel.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+            return { element: directPanel, source: 'direct-target', active: null };
+          }
+          const active = activeTabElement();
+          const activePanel = panelFromActive(active);
+          if (activePanel && activePanel.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+            return { element: activePanel, source: 'fallback-active-target', active };
+          }
+          const selectors = [
+            '[role="tabpanel"].active',
+            '[role="tabpanel"][aria-hidden="false"]',
+            '.tab-pane.active',
+            '.step-pane.active',
+            '.wizard-step.active',
+            'fieldset',
+            '.panel-body',
+            '.form-horizontal',
+            'form'
+          ];
+          for (const selector of selectors) {
+            for (const candidate of Array.from(document.querySelectorAll(selector))) {
+              if (!visible(candidate)) continue;
+              if (candidate.querySelector('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image]), table')) {
+                return { element: candidate, source: selector, active };
+              }
+            }
+          }
+          return { element: document.body, source: 'body', active };
+        };
+        const rootChoice = snapshotRoot();
+        const root = rootChoice.element;
+        const labelFor = (control) => {
+          if (control.id) {
+            const explicit = root.querySelector(`label[for="${CSS.escape(control.id)}"]`) || document.querySelector(`label[for="${CSS.escape(control.id)}"]`);
+            if (explicit && norm(explicit.innerText)) return norm(explicit.innerText);
+          }
+          const group = control.closest('.form-group, .form-item, .control-group, td, div');
+          if (group) {
+            const label = group.querySelector('label');
+            if (label && norm(label.innerText)) return norm(label.innerText);
+          }
+          let previous = control.previousElementSibling;
+          while (previous) {
+            if (previous.tagName && previous.tagName.toLowerCase() === 'label' && norm(previous.innerText)) {
+              return norm(previous.innerText);
+            }
+            previous = previous.previousElementSibling;
+          }
+          return norm(control.getAttribute('name') || control.id || '');
+        };
+        const valueFor = (control) => {
+          const tag = (control.tagName || '').toLowerCase();
+          if (tag === 'select') {
+            const selected = control.options && control.selectedIndex >= 0 ? control.options[control.selectedIndex] : null;
+            return norm(selected ? selected.text : control.value);
+          }
+          if (tag === 'textarea') {
+            return control.value != null ? control.value.toString() : (control.innerText || '').toString();
+          }
+          return norm(control.value != null ? control.value : control.innerText);
+        };
+        const fields = Array.from(root.querySelectorAll('select, textarea, input:not([type=button]):not([type=submit]):not([type=reset]):not([type=image])'))
+          .filter(visible)
+          .filter((control) => (control.getAttribute('type') || '').toLowerCase() !== 'password')
+          .map((control) => ({ label: labelFor(control), value: valueFor(control) }))
+          .filter((item) => item.label);
+        Array.from(root.querySelectorAll('dt')).filter(visible).forEach((dt) => {
+          const dd = dt.nextElementSibling;
+          if (dd && dd.tagName && dd.tagName.toLowerCase() === 'dd') {
+            const label = norm(dt.innerText);
+            if (label) fields.push({ label, value: norm(dd.innerText) });
+          }
+        });
+        const tables = includeTables ? Array.from(root.querySelectorAll('table')).filter(visible).map((table, tableIndex) => {
+          const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+            Array.from(row.querySelectorAll('th,td')).map((cell) => norm(cell.innerText))
+          ).filter((cells) => cells.some(Boolean));
+          return { index: tableIndex + 1, rows };
+        }).filter((table) => table.rows.length > 0) : [];
+        const rowsCount = tables.reduce((total, table) => total + table.rows.length, 0);
+        const cellsCount = tables.reduce((total, table) => total + table.rows.reduce((rowTotal, row) => rowTotal + row.length, 0), 0);
+        return {
+          fields,
+          tables,
+          text: '',
+          meta: {
+            root_source: rootChoice.source,
+            root_tag: root && root.tagName ? root.tagName.toLowerCase() : '',
+            root_id: root && root.id ? root.id : '',
+            root_class: safeClass(root),
+            active_tag: rootChoice.active && rootChoice.active.tagName ? rootChoice.active.tagName.toLowerCase() : '',
+            active_id: rootChoice.active && rootChoice.active.id ? rootChoice.active.id : '',
+            active_class: safeClass(rootChoice.active),
+            active_aria_controls: rootChoice.active ? (rootChoice.active.getAttribute('aria-controls') || '') : '',
+            active_href_fragment: rootChoice.active ? hrefFragment(rootChoice.active) : '',
+            fields_count: fields.length,
+            tables_count: tables.length,
+            rows_count: rowsCount,
+            cells_count: cellsCount
+          }
+        };
+        """,
+        target_fragment,
+        include_tables,
+    ) or {"fields": [], "tables": [], "text": ""}
+
+
+def tab_snapshot_metrics(tab: dict[str, Any], meta: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    tables = tab.get("tables") or []
+    rows_count = 0
+    cells_count = 0
+    for table in tables:
+        rows = table.get("rows") if isinstance(table, dict) else []
+        if not isinstance(rows, list):
+            continue
+        rows_count += len(rows)
+        cells_count += sum(len(row) for row in rows if isinstance(row, list))
+    meta = meta if isinstance(meta, dict) else {}
+    return {
+        "fields_count": len(tab.get("fields") or {}),
+        "tables_count": len(tables),
+        "rows_count": rows_count,
+        "cells_count": cells_count,
+        "serialized_bytes": len(json_dumps_bytes(tab)),
+        "root_source": meta.get("root_source", ""),
+        "root_tag": meta.get("root_tag", ""),
+        "root_id": meta.get("root_id", ""),
+        "root_class": meta.get("root_class", ""),
+        "active_tag": meta.get("active_tag", ""),
+        "active_id": meta.get("active_id", ""),
+        "active_class": meta.get("active_class", ""),
+        "active_aria_controls": meta.get("active_aria_controls", ""),
+        "active_href_fragment": meta.get("active_href_fragment", ""),
+    }
+
+
+def json_dumps_bytes(value: Any) -> bytes:
+    import json
+
+    return json.dumps(value, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
 def extract_label_value_fields(driver) -> dict[str, Any]:
@@ -502,7 +1119,7 @@ def extract_label_value_fields(driver) -> dict[str, Any]:
             continue
         label = label_for_control(driver, control)
         value = control_value(control)
-        if label and value != "":
+        if label:
             add_multivalue(fields, label, value)
 
     definition_rows = driver.find_elements(By.XPATH, "//dt[normalize-space(.)!='' and following-sibling::dd[1]]")
@@ -589,14 +1206,23 @@ def promote_detail(detalle_raw: dict[str, Any]) -> dict[str, Any]:
     all_fields = flatten_fields(tabs)
     forma_pago_tab = first_tab_matching(tabs, "forma de pago")
     resumen_tab = first_tab_matching(tabs, "resumen")
+    resumen_bono = resumen_bono_descuento(resumen_tab)
     promoted = {
         "comentario": first_value_by_label(all_fields, ["comentario", "observacion", "observaciones"]),
+        "numero_chasis": first_value_by_label(all_fields, ["chasis", "numero chasis", "número chasis", "nro chasis"]),
+        "vin_or_unidad_id": first_value_by_label(all_fields, ["vin", "numero vin", "número vin", "codigo interno", "código interno", "chasis", "numero chasis", "número chasis"]),
         "uso_vehiculo": first_value_by_label(all_fields, ["uso vehiculo", "uso del vehiculo", "uso"]),
         "tipo_venta_detalle": first_value_by_label(all_fields, ["tipo venta", "tipo de venta", "tipo venta detalle"]),
         "forma_pago": forma_pago_payload(forma_pago_tab),
-        "bono_descuento": first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
-        "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %"]),
-        "dcto_recargo_amount": first_value_by_label(all_fields, ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento"]),
+        "bono_descuento": resumen_bono.get("amount")
+        or first_value_by_label(all_fields, ["bono descuento", "bono", "descuento bono"]),
+        "bono_descuento_pct": resumen_bono.get("pct"),
+        "dcto_recargo_pct": first_value_by_label(all_fields, ["dcto recargo pct", "% dcto recargo", "descuento recargo %", "dcto/recargo %", "precio_venta_descuento_pje", "precio venta descuento pje"]),
+        "dcto_recargo_amount": first_value_by_label(
+            all_fields,
+            ["dcto recargo", "descuento recargo", "dcto/recargo", "monto descuento", "precio_venta_descuento", "precio venta descuento"],
+            exclude_labels=["precio_venta_descuento_pje", "precio venta descuento pje"],
+        ),
         "total_vehiculo_cliente": first_value_by_label(all_fields, ["total vehiculo cliente", "total vehiculo", "total cliente"]),
         "fecha_entrega": first_value_by_label(all_fields, ["fecha entrega", "fecha de entrega"]),
     }
@@ -628,7 +1254,13 @@ def first_tab_matching(tabs: dict[str, Any], needle: str) -> Optional[dict[str, 
     return None
 
 
-def first_value_by_label(fields: dict[str, list[str]], labels: list[str]) -> Optional[str]:
+def first_value_by_label(
+    fields: dict[str, list[str]],
+    labels: list[str],
+    *,
+    exclude_labels: Optional[list[str]] = None,
+) -> Optional[str]:
+    exclude_needles = [normalize_key(label) for label in (exclude_labels or [])]
     for label in labels:
         values = fields.get(normalize_key(label))
         if values:
@@ -636,9 +1268,48 @@ def first_value_by_label(fields: dict[str, list[str]], labels: list[str]) -> Opt
     for label in labels:
         needle = normalize_key(label)
         for key, values in fields.items():
-            if needle in key and values:
+            if needle in key and values and not any(exclude in key for exclude in exclude_needles):
                 return values[0]
     return None
+
+
+def resumen_bono_descuento(tab: Optional[dict[str, Any]]) -> dict[str, Optional[str]]:
+    result = {"amount": None, "pct": None}
+    if not tab:
+        return result
+    for table in tab.get("tables") or []:
+        rows = table.get("rows") if isinstance(table, dict) else []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, list) or not row:
+                continue
+            label_index = next(
+                (index for index, cell in enumerate(row) if normalize_key(cell) == "bono descuento"),
+                None,
+            )
+            if label_index is None:
+                continue
+            amount_index = None
+            for index, cell in enumerate(row[label_index + 1:], start=label_index + 1):
+                value = normalize_space(str(cell))
+                if "$" in value:
+                    amount_index = index
+                    result["amount"] = value
+                    break
+            if amount_index is not None:
+                for cell in row[amount_index + 1:]:
+                    value = normalize_space(str(cell))
+                    if "%" in value:
+                        result["pct"] = value
+                        break
+            return result
+    fields = tab.get("fields") if isinstance(tab, dict) else {}
+    if isinstance(fields, dict):
+        value = fields.get("Bono Descuento")
+        if value not in (None, ""):
+            result["amount"] = str(value)
+    return result
 
 
 def forma_pago_payload(tab: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:

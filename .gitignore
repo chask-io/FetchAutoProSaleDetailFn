@@ -34,3 +34,6 @@ samconfig.toml
 *.zip
 build/
 dist/
+
+# Chask deploy state
+.chask/
