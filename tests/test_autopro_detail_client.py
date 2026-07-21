@@ -112,32 +112,13 @@ def test_promote_detail_falls_back_to_codigo_interno_for_identity_key():
 
 
 def test_promote_detail_uses_autopro_precio_venta_descuento_aliases():
-    raw = {
-        "tabs": {
-            "Datos Vehículo": {
-                "fields": {
-                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento_Pje": "-12,09",
-                    "ctl00$PageContent$WizardPanels$Precio_Venta_Descuento": "$ -2.962.148",
-                },
-                "tables": [],
-                "text": "",
-            },
-            "Resumen Venta": {
-                "fields": {"Bono Descuento": "$ -1"},
-                "tables": [
-                    {
-                        "index": 1,
-                        "rows": [
-                            ["Concepto", "Vehículo", "%"],
-                            ["Bono Descuento", "$ 0", "0%"],
-                            ["Dscto. o Recargo", "$ -2.962.148", "-12,09%"],
-                        ],
-                    }
-                ],
-                "text": "",
-            }
-        }
-    }
+    raw = raw_with_production_resumen_bonus(
+        pct="-12,09",
+        amount="$ -2.962.148",
+        internal_bonus="$ -1",
+        resumen_bonus="$ 0",
+        resumen_bonus_pct="0%",
+    )
 
     promoted = client.promote_detail(raw)
 
@@ -148,20 +129,72 @@ def test_promote_detail_uses_autopro_precio_venta_descuento_aliases():
 
 
 @pytest.mark.parametrize(
-    ("pct", "amount", "internal_bonus", "resumen_bonus", "resumen_bonus_pct"),
+    ("folio", "pct", "amount", "internal_bonus", "resumen_bonus", "resumen_bonus_pct"),
     [
-        ("-0,73", "$ -200.000", "$ -2.500.000", "$ 2.500.000", "-8,34%"),
-        ("-3,54", "$ -883.100", "$ -4.760.000", "$ 4.760.000", "-16,01%"),
+        ("7954", "-12,09", "$ -2.962.148", "$ 0", "$ 0", "0%"),
+        ("7993", "-0,73", "$ -200.000", "$ -2.500.000", "$ 2.500.000", "-8,34%"),
+        ("7997", "-3,54", "$ -883.100", "$ -4.760.000", "$ 4.760.000", "-16,01%"),
     ],
 )
-def test_promote_detail_prefers_resumen_bono_descuento_over_internal_bono_field(
+def test_promote_detail_prefers_production_shape_resumen_bono_over_internal_bono_field(
+    folio,
     pct,
     amount,
     internal_bonus,
     resumen_bonus,
     resumen_bonus_pct,
 ):
-    raw = {
+    raw = raw_with_production_resumen_bonus(
+        pct=pct,
+        amount=amount,
+        internal_bonus=internal_bonus,
+        resumen_bonus=resumen_bonus,
+        resumen_bonus_pct=resumen_bonus_pct,
+        folio=folio,
+    )
+
+    promoted = client.promote_detail(raw)
+
+    assert promoted["dcto_recargo_pct"] == pct
+    assert promoted["dcto_recargo_amount"] == amount
+    assert promoted["bono_descuento"] == resumen_bonus
+    assert promoted["bono_descuento_pct"] == resumen_bonus_pct
+
+
+def test_promote_detail_uses_raw_bono_fallback_only_when_no_exact_resumen_row():
+    raw = raw_with_production_resumen_bonus(
+        pct="-0,73",
+        amount="$ -200.000",
+        internal_bonus="$ -2.500.000",
+        resumen_bonus="$ 2.500.000",
+        resumen_bonus_pct="-8,34%",
+    )
+    raw["tabs"]["Resumen Venta"]["tables"] = [
+        {
+            "index": 1,
+            "rows": [
+                ["", "Bono Descuento Totalizado", "$ 2.500.000", "-8,34%"],
+                ["", "Dscto. o Recargo", "$ -200.000", "-0,73%"],
+            ],
+        }
+    ]
+
+    promoted = client.promote_detail(raw)
+
+    assert promoted["bono_descuento"] == "$ -2.500.000"
+    assert promoted["bono_descuento_pct"] is None
+
+
+def raw_with_production_resumen_bonus(
+    *,
+    pct,
+    amount,
+    internal_bonus,
+    resumen_bonus,
+    resumen_bonus_pct,
+    folio="7954",
+):
+    return {
         "tabs": {
             "Datos Vehículo": {
                 "fields": {
@@ -178,32 +211,29 @@ def test_promote_detail_prefers_resumen_bono_descuento_over_internal_bono_field(
                     {
                         "index": 1,
                         "rows": [
-                            ["Concepto", "Vehículo", "%", "Accesorios", "%", "Tramites", "%", "Contratos", "%", "Total", "%"],
-                            ["Precio Lista", "$ 29.980.000"],
-                            ["Bono Descuento", resumen_bonus, resumen_bonus_pct],
-                            ["Venta", "$ 27.480.000"],
-                            ["Dscto. o Recargo", amount, f"{pct}%"],
+                            [
+                                f"EDITAR VENTA VEHICULO - FOLIO : {folio} Resumen Venta "
+                                f"Vehiculo % Precio Lista Bono Descuento {resumen_bonus} {resumen_bonus_pct}"
+                            ],
+                            ["", "", "Vehiculo", "%", "Accesorios", "%", "Tramites", "%", "Contratos", "%", "Total", "%"],
+                            ["", "Precio Lista", "$ 29.980.000", "", "", "", "", "", "", "", "$ 29.980.000", ""],
+                            ["", "Bono Descuento", resumen_bonus, resumen_bonus_pct, "", "", "", "", "", "", resumen_bonus, resumen_bonus_pct],
+                            ["", "Venta", "$ 27.480.000", "", "$ 0", "", "$ 0", "", "$ 0", "", "$ 27.480.000", ""],
+                            ["", "Dscto. o Recargo", amount, f"{pct}%", "$ 0", "0%", "$ 0", "0%", "$ 0", "0%", amount, f"{pct}%"],
                         ],
                     },
                     {
                         "index": 2,
                         "rows": [
-                            ["Concepto", "Vehículo", "%"],
-                            ["Bono Descuento", "$ 999.999.999", "-99,99%"],
+                            ["", "Concepto", "Vehiculo", "%"],
+                            ["", "Bono Descuento", "$ 999.999.999", "-99,99%"],
                         ],
-                    }
+                    },
                 ],
                 "text": "",
             },
         }
     }
-
-    promoted = client.promote_detail(raw)
-
-    assert promoted["dcto_recargo_pct"] == pct
-    assert promoted["dcto_recargo_amount"] == amount
-    assert promoted["bono_descuento"] == resumen_bonus
-    assert promoted["bono_descuento_pct"] == resumen_bonus_pct
 
 
 class _FakeElement:

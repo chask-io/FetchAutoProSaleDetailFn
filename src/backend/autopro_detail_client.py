@@ -1178,22 +1178,19 @@ def resumen_bono_descuento(tab: Optional[dict[str, Any]]) -> dict[str, Optional[
         for row in rows:
             if not isinstance(row, list) or not row:
                 continue
-            if normalize_key(row[0]) != "bono descuento":
+            label_index = next(
+                (index for index, cell in enumerate(row) if normalize_key(cell) == "bono descuento"),
+                None,
+            )
+            if label_index is None:
                 continue
             amount_index = None
-            for index, cell in enumerate(row[1:], start=1):
+            for index, cell in enumerate(row[label_index + 1:], start=label_index + 1):
                 value = normalize_space(str(cell))
                 if "$" in value:
                     amount_index = index
                     result["amount"] = value
                     break
-            if amount_index is None:
-                for index, cell in enumerate(row[1:], start=1):
-                    value = normalize_space(str(cell))
-                    if value:
-                        amount_index = index
-                        result["amount"] = value
-                        break
             if amount_index is not None:
                 for cell in row[amount_index + 1:]:
                     value = normalize_space(str(cell))
