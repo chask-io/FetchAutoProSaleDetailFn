@@ -275,17 +275,29 @@ class AutoProSaleDetailClient:
             if str(exc).strip("'\"") != "value":
                 raise
             logger.warning(
-                "AutoPro menu JS click returned malformed Selenium response for folio=%s; checking grid then using href navigation fallback",
+                "AutoPro menu JS click returned malformed Selenium response for folio=%s; checking grid before one retry",
                 self.folio,
             )
         except Exception:
             raise
 
-        try:
-            self._switch_to_grid(driver, timeout=3.0)
+        if self._grid_available_after_malformed_click(driver):
             return
-        except AutoProDetailUnavailableError:
-            pass
+        try:
+            access.js_click(link, label="menu venta vehiculos")
+            return
+        except KeyError as exc:
+            if str(exc).strip("'\"") != "value":
+                raise
+            logger.warning(
+                "AutoPro menu JS click retry also returned malformed Selenium response for folio=%s; checking grid then using href fallback",
+                self.folio,
+            )
+        except Exception:
+            raise
+
+        if self._grid_available_after_malformed_click(driver):
+            return
         safe_href = safe_autopro_navigation_href(href, self.base_url)
         if not safe_href:
             raise AutoProDetailUnavailableError(
@@ -293,6 +305,13 @@ class AutoProSaleDetailClient:
             )
         driver.switch_to.default_content()
         driver.get(safe_href)
+
+    def _grid_available_after_malformed_click(self, driver) -> bool:
+        try:
+            self._switch_to_grid(driver, timeout=3.0)
+            return True
+        except AutoProDetailUnavailableError:
+            return False
 
     def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
         self._switch_to_grid(driver)

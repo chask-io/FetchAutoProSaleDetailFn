@@ -390,8 +390,7 @@ def test_open_sales_grid_handles_browserbase_missing_value_click_response(monkey
 
     def fake_switch_to_grid(driver, timeout=25.0):
         switch_calls.append(timeout)
-        if len(switch_calls) == 1:
-            raise client.AutoProDetailUnavailableError("grid not ready")
+        raise client.AutoProDetailUnavailableError("grid not ready")
 
     scraper._switch_to_grid = fake_switch_to_grid
     driver = Driver()
@@ -399,8 +398,8 @@ def test_open_sales_grid_handles_browserbase_missing_value_click_response(monkey
 
     scraper._open_sales_grid_link(driver, access, Link())
 
-    assert access.clicked == ["menu venta vehiculos"]
-    assert switch_calls == [3.0]
+    assert access.clicked == ["menu venta vehiculos", "menu venta vehiculos"]
+    assert switch_calls == [3.0, 3.0]
     assert driver.urls == ["https://autoprocloud.com/showdms_venta_vehiculotable.aspx"]
 
 
