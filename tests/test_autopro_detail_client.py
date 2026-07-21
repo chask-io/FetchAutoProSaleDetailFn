@@ -357,6 +357,73 @@ def test_apply_grid_filters_sets_broad_date_window_and_folio(monkeypatch):
     assert access.folio_to.sent_values == ["7954"]
 
 
+def test_open_sales_grid_handles_browserbase_missing_value_click_response(monkeypatch):
+    class Link:
+        def get_attribute(self, name):
+            if name == "href":
+                return "https://autoprocloud.com/showdms_venta_vehiculotable.aspx"
+            return ""
+
+    class Driver:
+        def __init__(self):
+            self.urls = []
+            self.switch_to = self
+
+        def default_content(self):
+            return None
+
+        def get(self, url):
+            self.urls.append(url)
+
+    class Access:
+        def __init__(self):
+            self.clicked = []
+
+        def js_click(self, element, *, label):
+            self.clicked.append(label)
+            raise KeyError("value")
+
+    scraper = client.AutoProSaleDetailClient.__new__(client.AutoProSaleDetailClient)
+    scraper.folio = "7998"
+    scraper.base_url = "https://autoprocloud.com/mi-cuenta/"
+    switch_calls = []
+
+    def fake_switch_to_grid(driver, timeout=25.0):
+        switch_calls.append(timeout)
+        if len(switch_calls) == 1:
+            raise client.AutoProDetailUnavailableError("grid not ready")
+
+    scraper._switch_to_grid = fake_switch_to_grid
+    driver = Driver()
+    access = Access()
+
+    scraper._open_sales_grid_link(driver, access, Link())
+
+    assert access.clicked == ["menu venta vehiculos"]
+    assert switch_calls == [3.0]
+    assert driver.urls == ["https://autoprocloud.com/showdms_venta_vehiculotable.aspx"]
+
+
+@pytest.mark.parametrize(
+    "href",
+    [
+        "",
+        "javascript:guardar()",
+        "data:text/html,ok",
+        "https://example.com/showdms_venta_vehiculotable.aspx",
+        "https://autoprocloud.com/guardar_venta.aspx",
+        "https://autoprocloud.com/finalize_sale.aspx",
+        "https://autoprocloud.com/sale?action=save",
+    ],
+)
+def test_safe_autopro_navigation_href_rejects_unsafe_targets(href):
+    if not href:
+        assert client.safe_autopro_navigation_href(href, "https://autoprocloud.com/mi-cuenta/") == ""
+        return
+    with pytest.raises(client.AutoProReadOnlyViolation):
+        client.safe_autopro_navigation_href(href, "https://autoprocloud.com/mi-cuenta/")
+
+
 def test_element_metadata_excludes_password_and_redacts_client_filter_value():
     password = _FakeElement(attrs={"id": "PasswordFilter", "type": "password", "value": "secret"})
     client_filter = _FakeElement(

@@ -294,6 +294,68 @@ def test_batch_processes_mixed_success_failure_uploads_collection_and_returns_sm
     assert uploaded["payload"]["diagnostico_respuesta"]["serialized_bytes"] > contract["diagnostico_respuesta"]["serialized_bytes"]
 
 
+def test_batch_loop_isolates_arbitrary_folio_exception_and_runs_next(monkeypatch):
+    calls = []
+    uploaded = {}
+
+    def fake_fetch_one_result(self, *, folio, **kwargs):
+        calls.append(folio)
+        if folio == "7998":
+            raise RuntimeError("synthetic wrapper serialization bug")
+        return {
+            "status": "success",
+            "tenant_id": function_logic.TENANT_SLUG,
+            "folio": folio,
+            "folio_venta": folio,
+            "branch": kwargs["branch"],
+            "browserbase_session_id": f"bb-{folio}",
+            "detalle_raw": {"tabs": {"Resumen Venta": {"fields": {}, "tables": [], "text": ""}}},
+            "numero_chasis": f"CH-{folio}",
+            "vin_or_unidad_id": f"CH-{folio}",
+            "comentario": None,
+            "uso_vehiculo": None,
+            "tipo_venta_detalle": None,
+            "forma_pago": None,
+            "bono_descuento": None,
+            "bono_descuento_pct": None,
+            "dcto_recargo_pct": None,
+            "dcto_recargo_amount": None,
+            "total_vehiculo_cliente": None,
+            "fecha_entrega": None,
+        }
+
+    class Files:
+        def call(self, name, *args, **kwargs):
+            assert name == "upload_file"
+            uploaded["payload"] = json.loads(kwargs["file"].getvalue().decode("utf-8"))
+            return {"file_uuid": "isolated-output-uuid", "status_code": 201}
+
+    monkeypatch.setattr(function_logic.FunctionBackend, "_fetch_one_result", fake_fetch_one_result)
+    monkeypatch.setattr(function_logic, "files_api_manager", Files())
+    monkeypatch.setattr(function_logic.time, "sleep", lambda seconds: None)
+
+    result = function_logic.FunctionBackend(
+        make_event({"folios": ["7998", "7999"], "branch": "698", "delay_seconds": 0})
+    ).process_request()
+    contract = metadata_from_result(result)
+
+    assert calls == ["7998", "7999"]
+    assert contract["status"] == "partial_success"
+    assert contract["counts"] == {"requested": 2, "success": 1, "failed": 1}
+    assert contract["failures"] == [
+        {
+            "folio": "7998",
+            "status": "unavailable",
+            "mensaje_tecnico": "synthetic wrapper serialization bug",
+        }
+    ]
+    assert uploaded["payload"]["requested_folios"] == ["7998", "7999"]
+    assert uploaded["payload"]["results"][0]["status"] == "unavailable"
+    assert uploaded["payload"]["results"][0]["folio"] == "7998"
+    assert uploaded["payload"]["results"][1]["status"] == "success"
+    assert uploaded["payload"]["results"][1]["folio"] == "7999"
+
+
 def test_batch_loads_folios_from_generic_input_file_uuid(monkeypatch):
     requested_urls = []
     uploaded = {}

@@ -9,6 +9,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -260,10 +261,38 @@ class AutoProSaleDetailClient:
                 (By.XPATH, "//a[contains(@href, 'showdms_venta_vehiculotable')]")
             )
         )
-        access.js_click(link, label="menu venta vehiculos")
+        self._open_sales_grid_link(driver, access, link)
         time.sleep(6)
         self._switch_to_grid(driver)
         self._log("Opened Consulta Venta Vehiculo via menu")
+
+    def _open_sales_grid_link(self, driver, access: ReadOnlyElementAccess, link) -> None:
+        href = link.get_attribute("href") or ""
+        try:
+            access.js_click(link, label="menu venta vehiculos")
+            return
+        except KeyError as exc:
+            if str(exc).strip("'\"") != "value":
+                raise
+            logger.warning(
+                "AutoPro menu JS click returned malformed Selenium response for folio=%s; checking grid then using href navigation fallback",
+                self.folio,
+            )
+        except Exception:
+            raise
+
+        try:
+            self._switch_to_grid(driver, timeout=3.0)
+            return
+        except AutoProDetailUnavailableError:
+            pass
+        safe_href = safe_autopro_navigation_href(href, self.base_url)
+        if not safe_href:
+            raise AutoProDetailUnavailableError(
+                "AutoPro venta vehiculo menu click returned malformed Selenium response and link href was empty"
+            )
+        driver.switch_to.default_content()
+        driver.get(safe_href)
 
     def _filter_by_folio(self, driver, access: ReadOnlyElementAccess, wait) -> None:
         self._switch_to_grid(driver)
@@ -472,6 +501,25 @@ def assert_read_only_selector(value: str) -> None:
     for term in FORBIDDEN_UI_TERMS:
         if term in normalized:
             raise AutoProReadOnlyViolation(f"Refusing unsafe AutoPro selector/action: {redact_selector(value)}")
+
+
+def safe_autopro_navigation_href(href: str, base_url: str) -> str:
+    raw = (href or "").strip()
+    if not raw:
+        return ""
+    assert_read_only_selector(raw)
+    normalized = normalize_text(raw)
+    for term in ("javascript:", "data:", "save", "finalize", "action"):
+        if term in normalized:
+            raise AutoProReadOnlyViolation(f"Refusing unsafe AutoPro navigation target: {redact_selector(raw)}")
+    absolute = urljoin(base_url or DEFAULT_BASE_URL, raw)
+    parsed = urlparse(absolute)
+    base = urlparse(base_url or DEFAULT_BASE_URL)
+    if parsed.scheme not in {"http", "https"}:
+        raise AutoProReadOnlyViolation(f"Refusing non-http AutoPro navigation target: {redact_selector(raw)}")
+    if parsed.netloc != base.netloc:
+        raise AutoProReadOnlyViolation(f"Refusing cross-origin AutoPro navigation target: {redact_selector(raw)}")
+    return absolute
 
 
 def assert_no_blocking_prompt(driver) -> None:

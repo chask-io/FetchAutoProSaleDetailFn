@@ -128,17 +128,26 @@ class FunctionBackend:
                 time.sleep(delay_seconds)
             folio = request["folio"]
             logger.info("FetchAutoProSaleDetailFn batch folio start index=%s total=%s", index + 1, len(folio_requests))
-            if request.get("error"):
-                result = unavailable_result(folio=folio, branch=branch, mensaje_tecnico=request["error"])
-            else:
-                result = self._fetch_one_result(
+            try:
+                if request.get("error"):
+                    result = unavailable_result(folio=folio, branch=branch, mensaje_tecnico=request["error"])
+                else:
+                    result = self._fetch_one_result(
+                        folio=folio,
+                        branch=branch,
+                        verbose=verbose,
+                        username=username,
+                        password=password,
+                        browserbase_api_key=browserbase_api_key,
+                        browserbase_project_id=browserbase_project_id,
+                    )
+            except Exception as exc:
+                logger.warning("AutoPro batch folio isolated exception folio=%s: %s", folio, exc, exc_info=True)
+                result = unavailable_result(
                     folio=folio,
                     branch=branch,
-                    verbose=verbose,
-                    username=username,
-                    password=password,
-                    browserbase_api_key=browserbase_api_key,
-                    browserbase_project_id=browserbase_project_id,
+                    mensaje_tecnico=_safe_error_message(exc),
+                    diagnostico_grid=getattr(exc, "diagnostics", None),
                 )
             results.append(result)
             if result.get("status") != "success":
