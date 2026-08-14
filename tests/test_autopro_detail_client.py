@@ -94,6 +94,37 @@ def test_result_payload_is_json_serializable():
     json.dumps(detail.__dict__, ensure_ascii=False)
 
 
+def test_local_chrome_mode_never_creates_browserbase_session(monkeypatch):
+    scraper = client.AutoProSaleDetailClient(
+        username="user",
+        password="pass",
+        folio="7954",
+        branch="698",
+        browser_mode=client.LOCAL_CHROME_MODE,
+    )
+    local_driver = object()
+    monkeypatch.setattr(scraper, "_create_local_driver", lambda: local_driver)
+    monkeypatch.setattr(
+        scraper,
+        "_create_browserbase_session",
+        lambda: pytest.fail("Browserbase must not be called in local Chrome mode"),
+    )
+    monkeypatch.setattr(scraper, "_configure_driver_timeouts", lambda driver: None)
+    monkeypatch.setattr(scraper, "_start_deadline_watchdog", lambda driver, deadline: __import__("threading").Event())
+    monkeypatch.setattr(scraper, "_login", lambda driver, access, wait: None)
+    monkeypatch.setattr(scraper, "_select_context", lambda driver, access, wait: None)
+
+    scraper.start_session_context()
+
+    assert scraper._driver is local_driver
+    assert scraper._session_id == "local-chrome"
+
+
+@pytest.mark.parametrize("value", ["local", "chrome", "local-chrome", "local_chrome"])
+def test_normalize_browser_mode_accepts_local_aliases(value):
+    assert client.normalize_browser_mode(value) == client.LOCAL_CHROME_MODE
+
+
 def test_promote_detail_falls_back_to_codigo_interno_for_identity_key():
     raw = {
         "tabs": {

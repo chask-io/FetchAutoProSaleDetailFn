@@ -1,4 +1,10 @@
-"""Read-only Browserbase/Selenium AutoPro sale-detail client."""
+"""Read-only Selenium AutoPro sale-detail client.
+
+Browserbase remains the production default.  A local POC can opt into a
+headless local Chrome session with ``AUTOPRO_DETAIL_BROWSER_MODE=local_chrome``.
+The local path is deliberately separate from Browserbase session creation so a
+local run cannot call Browserbase by accident.
+"""
 
 import logging
 import os
@@ -23,6 +29,8 @@ PAGE_LOAD_TIMEOUT_SECONDS = 30
 SCRIPT_TIMEOUT_SECONDS = 30
 GRID_SEARCH_START_DATE = "01-01-2010"
 MIN_SECONDS_FOR_NEXT_TAB = 12
+BROWSERBASE_MODE = "browserbase"
+LOCAL_CHROME_MODE = "local_chrome"
 
 FORBIDDEN_UI_TERMS = ("guardar", "finalizar")
 SAFE_NEXT_LABEL = "Siguiente"
@@ -109,18 +117,20 @@ class AutoProSaleDetailClient:
         *,
         username: str,
         password: str,
-        base_url: str = DEFAULT_BASE_URL,
-        browserbase_api_key: str,
-        browserbase_project_id: str,
         folio: str,
+        base_url: str = DEFAULT_BASE_URL,
+        browserbase_api_key: Optional[str] = None,
+        browserbase_project_id: Optional[str] = None,
         branch: str = DEFAULT_BRANCH,
         verbose: bool = False,
+        browser_mode: Optional[str] = None,
     ):
         self.username = username
         self.password = password
         self.base_url = base_url or DEFAULT_BASE_URL
         self.browserbase_api_key = browserbase_api_key
         self.browserbase_project_id = browserbase_project_id
+        self.browser_mode = normalize_browser_mode(browser_mode)
         self.folio = normalize_folio(folio)
         self.branch = str(branch or DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
         self.verbose = verbose
@@ -139,9 +149,12 @@ class AutoProSaleDetailClient:
 
     def start_session_context(self) -> None:
         deadline = _OperationDeadline(self.max_seconds)
-        session = self._create_browserbase_session()
-        deadline.raise_if_expired()
-        driver = self._connect_to_session(session)
+        if self.browser_mode == LOCAL_CHROME_MODE:
+            driver = self._create_local_driver()
+        else:
+            session = self._create_browserbase_session()
+            deadline.raise_if_expired()
+            driver = self._connect_to_session(session)
         self._configure_driver_timeouts(driver)
         access = ReadOnlyElementAccess(driver)
         stop_watchdog = self._start_deadline_watchdog(driver, deadline)
@@ -161,7 +174,7 @@ class AutoProSaleDetailClient:
                 try:
                     driver.quit()
                 except Exception:
-                    logger.warning("Failed to quit Browserbase driver after initialization error", exc_info=True)
+                    logger.warning("Failed to quit AutoPro driver after initialization error", exc_info=True)
 
     def fetch_detail_for_folio(self, folio: str) -> AutoProSaleDetail:
         if self._driver is None or self._access is None:
@@ -204,6 +217,10 @@ class AutoProSaleDetailClient:
             logger.warning("Failed to quit Browserbase driver", exc_info=True)
 
     def _create_browserbase_session(self):
+        if self.browser_mode != BROWSERBASE_MODE:
+            raise AutoProReadOnlyViolation("Browserbase session creation is disabled in local Chrome mode")
+        if not self.browserbase_api_key or not self.browserbase_project_id:
+            raise AutoProDetailUnavailableError("Browserbase credentials are required in Browserbase mode")
         from browserbase import Browserbase
 
         bb = Browserbase(api_key=self.browserbase_api_key)
@@ -212,7 +229,27 @@ class AutoProSaleDetailClient:
         self._log("Browserbase session created: %s", session.id)
         return session
 
+    def _create_local_driver(self):
+        """Create one local headless Chrome driver without Browserbase calls."""
+        if self.browser_mode != LOCAL_CHROME_MODE:
+            raise AutoProReadOnlyViolation("Local Chrome driver creation requires local Chrome mode")
+        from selenium import webdriver
+
+        options = webdriver.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--window-size=1440,1200")
+        chrome_binary = os.environ.get("AUTOPRO_CHROME_BINARY", "").strip()
+        if chrome_binary:
+            options.binary_location = chrome_binary
+        self._session_id = "local-chrome"
+        self._log("Local Chrome session requested; Browserbase is disabled")
+        return webdriver.Chrome(options=options)
+
     def _connect_to_session(self, session):
+        if self.browser_mode != BROWSERBASE_MODE:
+            raise AutoProReadOnlyViolation("Remote Browserbase connection is disabled in local Chrome mode")
         from selenium import webdriver
 
         custom_conn = BrowserbaseRemoteConnectionMixin.build(
@@ -1353,6 +1390,19 @@ def normalize_folio(value: Any) -> str:
     if not re.fullmatch(r"\d+", folio):
         raise ValueError("folio must be numeric")
     return folio
+
+
+def normalize_browser_mode(value: Optional[str] = None) -> str:
+    """Return the explicit browser mode and reject unsafe/unknown values."""
+    raw = value if value is not None else os.environ.get("AUTOPRO_DETAIL_BROWSER_MODE", BROWSERBASE_MODE)
+    mode = str(raw or BROWSERBASE_MODE).strip().casefold().replace("-", "_")
+    if mode in {"local", "chrome", LOCAL_CHROME_MODE}:
+        return LOCAL_CHROME_MODE
+    if mode in {BROWSERBASE_MODE, "remote"}:
+        return BROWSERBASE_MODE
+    raise ValueError(
+        f"Unsupported AutoPro browser mode {raw!r}; use {BROWSERBASE_MODE!r} or {LOCAL_CHROME_MODE!r}"
+    )
 
 
 def normalize_key(value: Any) -> str:
