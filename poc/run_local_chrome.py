@@ -13,9 +13,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
-sys.path.insert(0, str(REPO_ROOT / "layers" / "browserbase_layer" / "python"))
-
-from chask_sdk import ChaskClient  # noqa: E402
+sys.path.append(str(REPO_ROOT / "layers" / "browserbase_layer" / "python"))
 
 from backend.autopro_detail_client import (  # noqa: E402
     LOCAL_CHROME_MODE,
@@ -53,7 +51,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_sdk_client(profile_file: Path, profile_name: str) -> ChaskClient:
+def load_sdk_client(profile_file: Path, profile_name: str):
+    from chask_sdk import ChaskClient
+
     metadata = json.loads(profile_file.read_text(encoding="utf-8"))
     profile = metadata["profiles"][profile_name]
     api_url = str(profile["apiUrl"]).rstrip("/")
@@ -67,7 +67,7 @@ def load_sdk_client(profile_file: Path, profile_name: str) -> ChaskClient:
     )
 
 
-def resolve_credentials(client: ChaskClient) -> tuple[str, str]:
+def resolve_credentials(client) -> tuple[str, str]:
     """Resolve values in memory. Do not log or persist either value."""
     username = client.get_secret(AUTOPRO_USERNAME_SECRET_UUID).reveal()
     password = client.get_secret(AUTOPRO_PASSWORD_SECRET_UUID).reveal()
