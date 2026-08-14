@@ -103,7 +103,12 @@ def test_local_chrome_mode_never_creates_browserbase_session(monkeypatch):
         browser_mode=client.LOCAL_CHROME_MODE,
     )
     local_driver = object()
-    monkeypatch.setattr(scraper, "_create_local_driver", lambda: local_driver)
+
+    def create_local_driver():
+        scraper._session_id = "local-chrome"
+        return local_driver
+
+    monkeypatch.setattr(scraper, "_create_local_driver", create_local_driver)
     monkeypatch.setattr(
         scraper,
         "_create_browserbase_session",
