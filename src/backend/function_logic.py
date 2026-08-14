@@ -13,10 +13,12 @@ from chask_foundation.backend.models import OrchestrationEvent
 from chask_foundation.configs.utils import get_secret
 
 from .autopro_detail_client import (
+    BROWSERBASE_MODE,
     DEFAULT_BASE_URL,
     DEFAULT_BRANCH,
     AutoProSaleDetailClient,
     normalize_folio,
+    normalize_browser_mode,
 )
 from .credentials import resolve_autopro_credentials
 
@@ -60,7 +62,11 @@ class FunctionBackend:
                 )
                 return format_result(result)
 
-            browserbase_api_key, browserbase_project_id = get_browserbase_credentials()
+            browser_mode = normalize_browser_mode()
+            browserbase_api_key = None
+            browserbase_project_id = None
+            if browser_mode == BROWSERBASE_MODE:
+                browserbase_api_key, browserbase_project_id = get_browserbase_credentials()
             if is_batch_request(tool_args):
                 return self._process_batch(
                     folio_requests=folio_requests,
@@ -70,6 +76,7 @@ class FunctionBackend:
                     password=password,
                     browserbase_api_key=browserbase_api_key,
                     browserbase_project_id=browserbase_project_id,
+                    browser_mode=browser_mode,
                     delay_seconds=parse_delay_seconds(tool_args.get("delay_seconds")),
                     source_file_uuid=tool_args.get("input_file_uuid") or tool_args.get("file_uuid") or None,
                     output_filename=tool_args.get("output_filename") or "autopro_sale_detail_results.json",
@@ -92,6 +99,7 @@ class FunctionBackend:
                 password=password,
                 browserbase_api_key=browserbase_api_key,
                 browserbase_project_id=browserbase_project_id,
+                browser_mode=browser_mode,
             )
             return format_result(result)
         except Exception as exc:
@@ -113,8 +121,9 @@ class FunctionBackend:
         verbose: bool,
         username: str,
         password: str,
-        browserbase_api_key: str,
-        browserbase_project_id: str,
+        browserbase_api_key: str | None,
+        browserbase_project_id: str | None,
+        browser_mode: str,
         delay_seconds: float,
         source_file_uuid: Any,
         output_filename: str,
@@ -147,6 +156,7 @@ class FunctionBackend:
                                 password=password,
                                 browserbase_api_key=browserbase_api_key,
                                 browserbase_project_id=browserbase_project_id,
+                                browser_mode=browser_mode,
                             )
                             client.start_session_context()
                         result = self._fetch_one_result_with_client(
@@ -230,8 +240,9 @@ class FunctionBackend:
         verbose: bool,
         username: str,
         password: str,
-        browserbase_api_key: str,
-        browserbase_project_id: str,
+        browserbase_api_key: str | None,
+        browserbase_project_id: str | None,
+        browser_mode: str,
     ) -> Dict[str, Any]:
         try:
             client = self._create_client(
@@ -242,6 +253,7 @@ class FunctionBackend:
                 password=password,
                 browserbase_api_key=browserbase_api_key,
                 browserbase_project_id=browserbase_project_id,
+                browser_mode=browser_mode,
             )
             detail = client.fetch_detail()
             return detail_result_payload(detail)
@@ -262,8 +274,9 @@ class FunctionBackend:
         verbose: bool,
         username: str,
         password: str,
-        browserbase_api_key: str,
-        browserbase_project_id: str,
+        browserbase_api_key: str | None,
+        browserbase_project_id: str | None,
+        browser_mode: str,
     ) -> AutoProSaleDetailClient:
         return AutoProSaleDetailClient(
             username=username,
@@ -271,6 +284,7 @@ class FunctionBackend:
             base_url=DEFAULT_BASE_URL,
             browserbase_api_key=browserbase_api_key,
             browserbase_project_id=browserbase_project_id,
+            browser_mode=browser_mode,
             folio=folio,
             branch=branch,
             verbose=verbose,
