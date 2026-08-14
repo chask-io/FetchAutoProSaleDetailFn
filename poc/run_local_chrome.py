@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -15,11 +16,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.append(str(REPO_ROOT / "layers" / "browserbase_layer" / "python"))
 
-from backend.autopro_detail_client import (  # noqa: E402
-    LOCAL_CHROME_MODE,
-    AutoProSaleDetailClient,
-    normalize_folio,
+_CLIENT_SPEC = importlib.util.spec_from_file_location(
+    "autopro_detail_client_host",
+    REPO_ROOT / "src" / "backend" / "autopro_detail_client.py",
 )
+if _CLIENT_SPEC is None or _CLIENT_SPEC.loader is None:
+    raise ImportError("Unable to load the standalone AutoPro detail client")
+_CLIENT_MODULE = importlib.util.module_from_spec(_CLIENT_SPEC)
+sys.modules[_CLIENT_SPEC.name] = _CLIENT_MODULE
+_CLIENT_SPEC.loader.exec_module(_CLIENT_MODULE)
+LOCAL_CHROME_MODE = _CLIENT_MODULE.LOCAL_CHROME_MODE
+AutoProSaleDetailClient = _CLIENT_MODULE.AutoProSaleDetailClient
+normalize_folio = _CLIENT_MODULE.normalize_folio
 
 
 AUTOPRO_USERNAME_SECRET_UUID = "0d123d55-45fc-4211-99f0-6d7082e0b15e"
