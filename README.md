@@ -49,6 +49,25 @@ selector and click calls pass through a read-only guard that rejects unsafe
 labels before they reach the driver. Wizard traversal is limited to tab state
 extraction and the `Siguiente` navigation control.
 
+## Host Local-Chrome POC
+
+The standalone host entrypoint runs one read-only folio with local headless
+Chrome. It resolves the two AutoPro SDK secrets in process and never prints or
+stores their values. The POC is fixed to branch `698` and does not call
+Browserbase. It writes a real `autopro_sale_detail_batch.v1` artifact with
+the extracted `detalle_raw` and promoted detail fields. The artifact directory
+is ignored by Git.
+
+Run it with the required memory scope:
+
+```bash
+systemd-run --user --scope -p MemoryMax=20G -- \
+  python3 poc/run_local_chrome.py 7954
+```
+
+The console and JSON evidence contain only the artifact path, SHA-256, counts,
+schema, and folio. They contain no credentials or extracted customer detail.
+
 ## Project Structure
 
 ```
